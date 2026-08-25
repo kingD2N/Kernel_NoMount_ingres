@@ -1,4 +1,4 @@
-#
+<div align="center">
 
 <img width="512" height="279" alt="image_0c69b253-1d7c-4fda-9f53-08ba18f46a10" src="https://github.com/user-attachments/assets/ba10704d-00c8-45d1-bde0-bd8bdb3618d2" />
 
@@ -23,9 +23,6 @@
 ---
 
 <div align="center">
-
-
-<img width="1380" height="752" alt="1000339818" src="https://github.com/user-attachments/assets/9c288842-4114-44fd-841f-7ee013dd8094" />
 
 #     ✧ Kernel Melt LazyGoogle ✧
 
