@@ -47,11 +47,11 @@ on:
         description: "kernel"
         required: false
         type: choice
-        default: MIX
+        default: 5.10.266-MIX-KERNEL
         options:
-          - Melt
-          - MIX
-          - LazyGoogle
+          - 5.10.266-Melt-KERNEL
+          - 5.10.266-MIX™-KERNEL
+          - 5.10.266-LazyGoogle-KERNEL
 
       susfs:
         description: "Add susfs support"
