@@ -47,10 +47,11 @@ on:
         description: "kernel"
         required: false
         type: choice
-        default: Melt-MIX
+        default: MIX
         options:
-          - Melt-Rebase
-          - Melt-MIX
+          - Melt
+          - MIX
+          - LazyGoogle
 
       susfs:
         description: "Add susfs support"
