@@ -24,7 +24,7 @@
 
 <div align="center">
 
-#     ✧ Kernel Melt LazyGoogle ✧
+#     ✧ Kernel Melt MIX™ ✧
 
 #   ✧ For POCO F4 GT (ingres) ✧
 
