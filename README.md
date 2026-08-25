@@ -22,8 +22,6 @@
 
 ---
 
-<div align="center">
-
 #     ✧ Kernel Melt MIX™ ✧
 
 #   ✧ For POCO F4 GT (ingres) ✧
