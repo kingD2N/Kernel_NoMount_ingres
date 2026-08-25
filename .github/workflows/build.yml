@@ -13,7 +13,7 @@ on:
         description: "Branch on kernel_source above (independent from modules/devicetree branches below)"
         required: true
         type: choice
-        default: "LazyGoogle_ORI"
+        default: "melt-MIX"
         options :
            - LazyGoogle_ORI
            - melt-MIX
@@ -83,15 +83,15 @@ on:
 
       droidspaces:
         description: "Add DroidSpaces support"
-        required: false
+        required: true
         type: boolean
-        default: false
+        default: true
 
       nomount:
         description: "Add NoMount support (kernel VFS path redirection/injection, kingD2N/nomount - research/dev project per upstream README; may conflict with susfs since both patch fs/namei.c)"
-        required: false
+        required: true
         type: boolean
-        default: false
+        default: true
 
       ccache_update:
         description: "Refresh ccache (overwrite the repo cache with this build's ccache; enable when u changed configs/source or need a clean cache)"
