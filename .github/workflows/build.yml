@@ -368,28 +368,49 @@ jobs:
           DROIDSPACES_CONFIG=""
           if [[ "${{ inputs.droidspaces }}" == true ]]; then
             # ingres (sm8450) ships GKI kernel 5.10 -> DroidSpaces 5.10 patch path.
-            # Some kernel_source branches already carry these kabi fixes natively,
-            # which makes the community patch a no-op there and patch(1) exits
-            # non-zero on "reversed/already applied" hunks even though nothing is
-            # actually wrong - that would kill the whole step under `bash -e`.
-            # Dry-run first and only apply for real on a clean hit; otherwise skip
-            # instead of failing the build over it.
+            # Per DroidSpaces-OSS's own docs these kABI patches are NOT optional on
+            # GKI: enabling CONFIG_SYSVIPC/CONFIG_IPC_NS/CONFIG_POSIX_MQUEUE without
+            # them applied can bootloop the device. Some kernel_source branches do
+            # carry the fix natively though, which makes the patch a clean no-op
+            # there. So for each patch: try forward first; if that fails, check
+            # reverse-apply to confirm it's genuinely already present (not just
+            # "didn't apply for some other reason") before treating it as fine.
+            # Only enable the DroidSpaces config fragment below if BOTH patches
+            # come back confirmed either way - if either is a genuine unknown,
+            # skip the whole fragment rather than risk shipping an unsafe kernel.
+            apply_droidspaces_patch() {
+              local patch_file="$1" label="$2"
+              if patch -p1 -N --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
+                patch -p1 -N --fuzz=0 < "$patch_file"
+                echo "==> DroidSpaces ${label}: applied."
+                return 0
+              elif patch -p1 -R --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
+                echo "==> DroidSpaces ${label}: already present natively on this branch (confirmed via reverse-check) - not re-applying."
+                return 0
+              else
+                echo "::warning::DroidSpaces ${label} doesn't apply cleanly in either direction - can't confirm the kABI fix is actually present on this tree."
+                return 1
+              fi
+            }
+
+            DROIDSPACES_SAFE=true
+
             curl -sLo patch-for-below-6.12.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
-            if patch -p1 -N --dry-run --silent < patch-for-below-6.12.patch > /dev/null 2>&1; then
-              patch -p1 -N < patch-for-below-6.12.patch
-            else
-              echo "::warning::DroidSpaces patch 001 (sysvipc kabi fix) doesn't apply cleanly on this kernel tree - likely already present natively on this branch. Skipping rather than failing the build."
-            fi
+            apply_droidspaces_patch patch-for-below-6.12.patch "patch 001 (sysvipc kabi fix)" || DROIDSPACES_SAFE=false
 
             curl -sLo patch-for-5.10-or-lower.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
-            if patch -p1 -N --dry-run --silent < patch-for-5.10-or-lower.patch > /dev/null 2>&1; then
-              patch -p1 -N < patch-for-5.10-or-lower.patch
-            else
-              echo "::warning::DroidSpaces patch 002 (posix_mqueue abi padding) doesn't apply cleanly on this kernel tree - likely already present natively on this branch. Skipping rather than failing the build."
-            fi
+            apply_droidspaces_patch patch-for-5.10-or-lower.patch "patch 002 (posix_mqueue abi padding)" || DROIDSPACES_SAFE=false
 
-            cp ${GITHUB_WORKSPACE}/configs/droidspaces-gki.config arch/arm64/configs/vendor/droidspaces.config
-            DROIDSPACES_CONFIG="vendor/droidspaces.config"
+            if [[ "$DROIDSPACES_SAFE" == true ]]; then
+              if [[ -f "${GITHUB_WORKSPACE}/configs/droidspaces-gki.config" ]]; then
+                cp ${GITHUB_WORKSPACE}/configs/droidspaces-gki.config arch/arm64/configs/vendor/droidspaces.config
+                DROIDSPACES_CONFIG="vendor/droidspaces.config"
+              else
+                echo "::warning::configs/droidspaces-gki.config not found in this repo's root - DroidSpaces config fragment not applied (nothing to enable it with). Add that file to the repo (see ravindu644/Droidspaces-OSS 'Configuring GKI Kernels' docs) to actually turn DroidSpaces on."
+              fi
+            else
+              echo "::warning::Skipping the DroidSpaces config fragment entirely this run - at least one required kABI patch could not be confirmed. Enabling CONFIG_SYSVIPC/CONFIG_IPC_NS/CONFIG_POSIX_MQUEUE without it risks a bootloop per DroidSpaces-OSS's own docs, so this run won't have working DroidSpaces support."
+            fi
           fi
 
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
