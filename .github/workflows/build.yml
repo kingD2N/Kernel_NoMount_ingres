@@ -47,9 +47,10 @@ on:
         description: "kernel"
         required: false
         type: choice
-        default: Melt-Rebase
+        default: Melt-MIX
         options:
           - Melt-Rebase
+          - Melt-MIX
 
       susfs:
         description: "Add susfs support"
