@@ -311,38 +311,17 @@ jobs:
           if [[ "${{ inputs.nomount }}" == true ]]; then
             echo "::group::NoMount integration"
             if [[ "${{ inputs.susfs }}" == true ]]; then
-              echo "::warning::susfs and nomount are both enabled - both patch fs/namei.c (susfs's SUS_KSTAT also touches fs/stat.c, same file NoMount's getattr hook patches). If anything below fails, check for a .rej file before assuming it's something else."
+              echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
             fi
 
-            git clone --depth=1 https://github.com/kingD2N/nomount.git nomount-src
-
-            # GitHub blocks directory browsing from outside for this repo, so the
-            # exact layout under kernel/ couldn't be confirmed ahead of time.
-            # Dump it unconditionally - cheap on a repo this size, and it's the
-            # ground truth to work from if anything below fails.
-            echo "==> nomount-src layout:"
-            find nomount-src -maxdepth 4 -not -path '*/.git*' | sort
-
-            mapfile -t NOMOUNT_PATCHES < <(find nomount-src -type f \( -name "*.patch" -o -name "*.diff" \) | sort)
-            NOMOUNT_PATCH=""
-            for p in "${NOMOUNT_PATCHES[@]}"; do
-              if [[ "$p" == *5.10* ]]; then
-                NOMOUNT_PATCH="$p"
-                break
-              fi
-            done
-            if [[ -z "$NOMOUNT_PATCH" && "${#NOMOUNT_PATCHES[@]}" -eq 1 ]]; then
-              NOMOUNT_PATCH="${NOMOUNT_PATCHES[0]}"
-            fi
-
-            if [[ -z "$NOMOUNT_PATCH" ]]; then
-              echo "::error::No 5.10 integration patch identified out of ${#NOMOUNT_PATCHES[@]} candidate(s) - see the layout dumped above and point this step at the right file."
-              exit 1
-            fi
-            echo "==> Using patch: $NOMOUNT_PATCH"
-            patch -p1 < "$NOMOUNT_PATCH"
-
-            cp nomount-src/kernel/src/* fs/
+            # kernel/README.md documents "patch -p1 < ..._kernel_integration.patch",
+            # but a full recursive search of a fresh clone (see a prior run's log)
+            # found zero .patch/.diff files anywhere in the repo - that instruction
+            # is stale. The repo instead ships kernel/setup.sh: the same curl-pipe-
+            # bash install convention KernelSU/KernelSU-Next/SukiSU-Ultra all use
+            # above in this same job, so integrate the same way rather than
+            # hunting for a static patch that no longer exists.
+            curl -LSs "https://raw.githubusercontent.com/kingD2N/nomount/master/kernel/setup.sh" | bash
             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
             echo "::endgroup::"
           fi
