@@ -11,7 +11,7 @@
 | 🛠️ Build Scope | ZIP |
 | 📦 Source | https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres |
 | ⚔️ Kernel branch | melt-MIX |
-| 💻 KSU Manager type | KernelSU-Next |
+| 💻 KSU Manager type | KernelSU-Next & ReSukisu |
 | 🔧 SuSFS Version | Supported (susfs4ksu@44d9fed) |
 | ⚙️ BBG Patch | Supported |
 | ⚙️ Re-Kernel (Netlink) | Supported |
