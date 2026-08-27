@@ -167,13 +167,36 @@ jobs:
           git clone --depth=1 -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
             || git clone --depth=1 https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
 
-      - name: Download LLVM 22.1.8
+      - name: Download LLVM (latest stable release)
         run: |
           mkdir -p toolchains
           cd toolchains
-          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
-          mkdir llvm-22.1.8
-          tar -xf LLVM-22.1.8-Linux-X64.tar.xz -C llvm-22.1.8 --strip-components=1
+
+          # Auto-detect the latest stable (non-draft, non-prerelease) LLVM
+          # release via gh CLI - already authenticated through the job-level
+          # GH_TOKEN above, so this doesn't hit the unauthenticated API rate
+          # limit. This replaces a hardcoded version so the workflow doesn't
+          # need manual edits every time upstream cuts a new release.
+          LLVM_TAG=$(gh release list --repo llvm/llvm-project --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
+          if [[ -z "$LLVM_TAG" ]]; then
+            echo "::error::Could not determine the latest llvm/llvm-project release tag via gh CLI."
+            exit 1
+          fi
+          LLVM_VERSION="${LLVM_TAG#llvmorg-}"
+          echo "==> Latest LLVM release: ${LLVM_TAG} (version ${LLVM_VERSION})"
+          echo "LLVM_VERSION=${LLVM_VERSION}" >> $GITHUB_ENV
+
+          ASSET="LLVM-${LLVM_VERSION}-Linux-X64.tar.xz"
+          URL="https://github.com/llvm/llvm-project/releases/download/${LLVM_TAG}/${ASSET}"
+          if ! wget -q "$URL"; then
+            echo "::error::Failed to download ${URL} - ${LLVM_TAG} may not publish a Linux-X64 tarball under the expected name. Check https://github.com/llvm/llvm-project/releases/tag/${LLVM_TAG} for the actual asset name."
+            exit 1
+          fi
+
+          # Version-agnostic folder name (not "llvm-${LLVM_VERSION}") so
+          # CLANG_ROOT below never needs updating when the version changes.
+          mkdir llvm
+          tar -xf "${ASSET}" -C llvm --strip-components=1
 
       # ---- ccache-ECS (cctv18 style layered ccache) ----
       - name: Configure ccache dir and key
@@ -206,7 +229,7 @@ jobs:
 
       - name: Compile Kernel
         run: |
-          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm-22.1.8/bin"
+          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
           export PATH="${CLANG_ROOT}:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -617,7 +640,7 @@ jobs:
           | ⚙️ Re-Kernel (eBPF) | ${rekernel_ebpf_checkbox} |
           | 🧩 DroidSpaces | ${droidspaces_checkbox} |
           | 🗂️ NoMount | ${nomount_checkbox} |
-          | 🔨 Compiler | LLVM/Clang 22.1.8 Official |
+          | 🔨 Compiler | LLVM/Clang ${LLVM_VERSION} Official |
 
           ---
           NOTES_EOF
