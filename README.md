@@ -18,7 +18,7 @@
 | ⚙️ Re-Kernel (eBPF) | Supported (daemon+prog attached as release assets) |
 | 🧩 DroidSpaces | Supported |
 | 🗂️ NoMount | Supported (research/dev - kingD2N/nomount) |
-| 🔨 Compiler | LLVM/Clang 22.1.8 Official |
+| 🔨 Compiler | LLVM/Clang 23.1.0 Official |
 
 ---
 
