@@ -16,6 +16,8 @@ on:
         default: "melt-MIX"
         options :
            - LazyGoogle_ORI
+           - melt-rebase-4LazyGoogle
+           - bouquet
            - melt-MIX
            
       modules_branch:
