@@ -53,6 +53,7 @@ on:
         options:
           - 5.10.266-Melt-KERNEL
           - 5.10.266-MIX™-KERNEL
+          - 5.10.266-bouquet-KERNEL
           - 5.10.266-LazyGoogle-KERNEL
 
       susfs:
