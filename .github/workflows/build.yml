@@ -17,7 +17,6 @@ on:
         options :
            - LazyGoogle_ORI
            - melt-rebase-4LazyGoogle
-           - bouquet
            - melt-MIX
            
       modules_branch:
@@ -53,7 +52,6 @@ on:
         options:
           - 5.10.266-Melt-KERNEL
           - 5.10.266-MIX™-KERNEL
-          - 5.10.266-bouquet-KERNEL
           - 5.10.267-LazyGoogle-KERNEL
 
       susfs:
