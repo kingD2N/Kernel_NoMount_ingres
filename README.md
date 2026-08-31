@@ -7,7 +7,7 @@
 | 📱 Device | POCO F4 GT (ingres) • Redmi K50G (ingres) |
 | 🟠 ROM Support | Official AOSP |
 | 🖥️ Kernel Name | Melt-Rebase |
-| 🧬 Kernel Base | android12-5.10.266 |
+| 🧬 Kernel Base | android12-5.10.xxx |
 | 🛠️ Build Scope | ZIP |
 | 📦 Source | https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres |
 | ⚔️ Kernel branch | melt-MIX |
