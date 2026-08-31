@@ -69,7 +69,7 @@ Kernel adalah lapisan inti (core) sistem operasi Android yang menjadi jembatan k
 
 ## ⚠️ Hal yang Wajib Diperhatikan Sebelum Flash Kernel Custom
 
-1. **Cocokkan versi ROM dan base kernel** — pastikan ROM (AOSP/HyperOS/MIUI) memakai base kernel yang sama dengan kernel yang akan di-flash (misalnya Linux 5.10.266 pada project ini). Base yang berbeda berisiko bootloop.
+1. **Cocokkan versi ROM dan base kernel** — pastikan ROM (AOSP/HyperOS/MIUI) memakai base kernel yang sama dengan kernel yang akan di-flash (misalnya Linux 5.10.xxx pada project ini). Base yang berbeda berisiko bootloop.
 2. **Bootloader harus sudah unlock** — flashing kernel custom mengharuskan bootloader dalam kondisi unlocked.
 3. **Backup partisi penting** — backup `boot`, (via TWRP atau fastboot) sebelum flashing, serta backup data pribadi karena tetap ada risiko.
 4. **Cek kompatibilitas solusi root** — jangan memasang Magisk dan KernelSU manager berbarengan tanpa memahami cara kerja masing-masing; pilih salah satu yang sesuai dengan varian kernel.
@@ -103,7 +103,7 @@ Codename **ingres** adalah identitas internal perangkat yang membedakan source c
 ### Karakteristik Kernel pada ingres
 
 - Menggunakan **GKI (Generic Kernel Image)** sejak rilis dengan Android 12, sehingga kernel image terpisah dari modul vendor (`vendor_boot`, `vendor_dlkm`)
-- Base kernel **Linux 5.10.266**, sesuai penamaan repository project ini
+- Base kernel **Linux 5.10.xxx**, sesuai penamaan repository project ini
 - Modul vendor harus cocok `vermagic` dan versi symbol-nya agar dapat dimuat oleh kernel custom
 - Chipset SM8450 dikenal memiliki karakteristik thermal yang cukup panas, sehingga tuning CPU governor dan thermal pada kernel custom sangat berpengaruh terhadap pengalaman gaming di perangkat ini
 
