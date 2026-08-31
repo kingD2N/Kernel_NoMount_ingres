@@ -13,7 +13,7 @@ on:
         description: "Branch on kernel_source above (independent from modules/devicetree branches below)"
         required: true
         type: choice
-        default: "melt-MIX"
+        default: "melt-rebase-4LazyGoogle"
         options :
            - LazyGoogle_ORI
            - melt-rebase-4LazyGoogle
@@ -48,11 +48,11 @@ on:
         description: "kernel"
         required: false
         type: choice
-        default: 5.10.266-MIX™-KERNEL
+        default: LazyGoogle-KERNEL
         options:
-          - 5.10.266-Melt-KERNEL
-          - 5.10.266-MIX™-KERNEL
-          - 5.10.267-LazyGoogle-KERNEL
+          - Melt-KERNEL
+          - MIX™-KERNEL
+          - LazyGoogle-KERNEL
 
       susfs:
         description: "Add susfs support"
