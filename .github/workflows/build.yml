@@ -91,7 +91,7 @@ on:
         default: true
 
       nomount:
-        description: "Add NoMount support (kernel VFS path redirection/injection, kingD2N/nomount - research/dev project per upstream README; may conflict with susfs since both patch fs/namei.c)"
+        description: "Add NoMount support (kernel VFS path redirection/injection, maxsteeel/nomount@dev - auto-updates to whatever's newest on that branch each run; may conflict with susfs since both patch fs/namei.c)"
         required: true
         type: boolean
         default: true
@@ -121,10 +121,7 @@ jobs:
 
       - name: Free up disk space
         run: |
-          # Kernel build + 16GB swap file + multiple repo clones can exceed
-          # the ~14GB free disk on a standard GitHub-hosted runner, causing
-          # "No space left on device" mid-build. Removing preinstalled
-          # toolchains we don't use reclaims tens of GB up front.
+          
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force || true
           df -h
@@ -159,11 +156,7 @@ jobs:
           git clone --depth=1 -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
           git clone --depth=1 -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
-          # The Ingres-Centre devicetrees fork currently defaults to a different
-          # branch than the kernel/modules repos above (lineage-23.0 vs lineage-23.2),
-          # so try the requested branch first and fall back to the repo's own
-          # default branch if it isn't there. This mirrors the LineageOS kernel
-          # manifest path for this repo: arch/arm64/boot/dts/vendor.
+          
           rm -rf ${SOC}/arch/arm64/boot/dts/vendor
           git clone --depth=1 -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
             || git clone --depth=1 https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
@@ -173,11 +166,7 @@ jobs:
           mkdir -p toolchains
           cd toolchains
 
-          # Auto-detect the latest stable (non-draft, non-prerelease) LLVM
-          # release via gh CLI - already authenticated through the job-level
-          # GH_TOKEN above, so this doesn't hit the unauthenticated API rate
-          # limit. This replaces a hardcoded version so the workflow doesn't
-          # need manual edits every time upstream cuts a new release.
+          
           LLVM_TAG=$(gh release list --repo llvm/llvm-project --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
           if [[ -z "$LLVM_TAG" ]]; then
             echo "::error::Could not determine the latest llvm/llvm-project release tag via gh CLI."
@@ -194,8 +183,7 @@ jobs:
             exit 1
           fi
 
-          # Version-agnostic folder name (not "llvm-${LLVM_VERSION}") so
-          # CLANG_ROOT below never needs updating when the version changes.
+          
           mkdir llvm
           tar -xf "${ASSET}" -C llvm --strip-components=1
 
@@ -302,9 +290,7 @@ jobs:
           esac
 
           if [[ "${{ inputs.susfs }}" == true ]]; then
-            # Full clone (no --depth) so any commit in this branch's history
-            # can be checked out below, not just the branch tip. If
-            # susfs_commit is left empty, we just stay on the tip (latest).
+            
             git clone -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
             cd susfs
 
@@ -340,14 +326,16 @@ jobs:
               echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
             fi
 
-            # kernel/README.md documents "patch -p1 < ..._kernel_integration.patch",
-            # but a full recursive search of a fresh clone (see a prior run's log)
-            # found zero .patch/.diff files anywhere in the repo - that instruction
-            # is stale. The repo instead ships kernel/setup.sh: the same curl-pipe-
-            # bash install convention KernelSU/KernelSU-Next/SukiSU-Ultra all use
-            # above in this same job, so integrate the same way rather than
-            # hunting for a static patch that no longer exists.
-            curl -LSs "https://raw.githubusercontent.com/kingD2N/nomount/master/kernel/setup.sh" | bash
+            
+            NOMOUNT_COMMIT=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/dev | cut -f1 | cut -c1-7)
+            if [[ -z "$NOMOUNT_COMMIT" ]]; then
+              echo "::warning::Could not resolve maxsteeel/nomount's dev branch HEAD via git ls-remote - continuing anyway, but the release notes won't show a commit hash for this run."
+              NOMOUNT_COMMIT="unknown"
+            fi
+            echo "NOMOUNT_COMMIT=${NOMOUNT_COMMIT}" >> $GITHUB_ENV
+            echo "==> NoMount: using maxsteeel/nomount@dev (${NOMOUNT_COMMIT})"
+
+            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -s dev
             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
             echo "::endgroup::"
           fi
@@ -366,14 +354,7 @@ jobs:
           fi
 
           if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
-            # Prereqs for the "Build Re-Kernel (eBPF)" step below: BTF so
-            # bpftool can dump a vmlinux.h from our own out/vmlinux (needs
-            # DEBUG_INFO_BTF; pahole/dwarves is already installed in the deps
-            # step above), plus the syscall/JIT/kprobe+uprobe/cgroup+tc attach
-            # points the eBPF program itself needs. Nothing else touches the
-            # kernel source/defconfig here — the eBPF build itself happens
-            # later, once out/vmlinux exists, and doesn't patch binder.c, so
-            # it's safe to run alongside Netlink above.
+            
             echo "CONFIG_BPF_SYSCALL=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_BPF_JIT=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_CGROUP_BPF=y" >> arch/arm64/configs/gki_defconfig
@@ -393,17 +374,7 @@ jobs:
 
           DROIDSPACES_CONFIG=""
           if [[ "${{ inputs.droidspaces }}" == true ]]; then
-            # ingres (sm8450) ships GKI kernel 5.10 -> DroidSpaces 5.10 patch path.
-            # Per DroidSpaces-OSS's own docs these kABI patches are NOT optional on
-            # GKI: enabling CONFIG_SYSVIPC/CONFIG_IPC_NS/CONFIG_POSIX_MQUEUE without
-            # them applied can bootloop the device. Some kernel_source branches do
-            # carry the fix natively though, which makes the patch a clean no-op
-            # there. So for each patch: try forward first; if that fails, check
-            # reverse-apply to confirm it's genuinely already present (not just
-            # "didn't apply for some other reason") before treating it as fine.
-            # Only enable the DroidSpaces config fragment below if BOTH patches
-            # come back confirmed either way - if either is a genuine unknown,
-            # skip the whole fragment rather than risk shipping an unsafe kernel.
+            
             apply_droidspaces_patch() {
               local patch_file="$1" label="$2"
               if patch -p1 -N --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
@@ -446,12 +417,7 @@ jobs:
           make O=out gki_defconfig vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config ${DROIDSPACES_CONFIG}
 
           echo "::group::Sanity-check defconfig (savedefconfig)"
-          # `make <fragments>` di atas cuma nge-merge & nulis .config mentah.
-          # savedefconfig di sini yang beneran nyuruh Kconfig resolve semua
-          # dependency (select/depends on), dan otomatis buang symbol yang
-          # gak valid/gak eksis di tree ini. Kalau ada config yang kita mau
-          # (misal tuning gaming) ternyata ke-drop, ketauan DI SINI - bukan
-          # setelah nunggu 1-2 jam `make Image` kelar.
+
           make O=out savedefconfig
           cp out/defconfig "${GITHUB_WORKSPACE}/resolved_defconfig.txt"
 
@@ -479,7 +445,7 @@ jobs:
           done
           echo "::endgroup::"
 
-          # ccache must be injected via make command-line CC (LLVM=1 overrides the env CC otherwise)
+          
           make -j$(nproc) O=out CC="ccache ${CLANG_ROOT}/clang" HOSTCC="ccache ${CLANG_ROOT}/clang" Image
 
           echo "ccache status after build:"
@@ -505,36 +471,29 @@ jobs:
         run: |
           set -e
 
-          # Everything downloaded/extracted for this step lives under its own
-          # subfolder so it never touches $GITHUB_WORKSPACE's root — a stray
-          # *.zip there (e.g. the NDK archive) would break the `ls *.zip`
-          # glob the release step uses to find the kernel zip.
+          
           mkdir -p rekernel-ebpf-build
           cd rekernel-ebpf-build
 
-          # ---- Host bpftool (static, decoupled from the runner's own kernel) ----
-          # Used to dump BTF type info from the vmlinux we just built into a C header.
+          
           curl -sSL -o bpftool.tar.gz \
             https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-amd64.tar.gz
           mkdir -p bpftool-bin
           tar -xzf bpftool.tar.gz -C bpftool-bin
           chmod +x bpftool-bin/bpftool
 
-          # ---- Android NDK r27d (eBPF-Source/Makefile's default NDK toolchain) ----
+          
           wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
           unzip -q android-ndk-r27d-linux.zip
 
-          # ---- Fetch only the eBPF-Source subfolder from Re-Kernel ----
+          
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/Sakion-Team/Re-Kernel.git rekernel-ebpf-src
           cd rekernel-ebpf-src
           git sparse-checkout set eBPF-Source
           cd eBPF-Source
 
-          # ---- Device-specific vmlinux.h, from the kernel we just built ----
-          # (README says pull /sys/kernel/btf/vmlinux off a running device; using
-          # our own freshly-built vmlinux is equivalent and exactly matches what
-          # will actually be flashed).
+
           "${GITHUB_WORKSPACE}/rekernel-ebpf-build/bpftool-bin/bpftool" btf dump file \
             "${GITHUB_WORKSPACE}/${SOC}/out/vmlinux" format c > include/vmlinux.h
 
@@ -615,7 +574,7 @@ jobs:
           fi
 
           if [[ "${{ inputs.nomount }}" == true ]]; then
-            nomount_checkbox="Supported (research/dev - kingD2N/nomount)"
+            nomount_checkbox="Supported (maxsteeel/nomount@dev@${NOMOUNT_COMMIT})"
           else
             nomount_checkbox="Unsupported"
           fi
@@ -630,7 +589,7 @@ jobs:
           | 📱 Device | POCO F4 GT (ingres) • Redmi K50G (ingres) |
           | 🟠 ROM Support | Official AOSP |
           | 🖥️ Kernel Name | ${KERNEL_NAME} |
-          | 🧬 Kernel Base | android12-5.10.266 |
+          | 🧬 Kernel Base | android12-5.10.267 |
           | 🛠️ Build Scope | ZIP |
           | 📦 Source | ${{ inputs.kernel_source }} |
           | ⚔️ Kernel branch | ${{ inputs.kernel_branch }} |
