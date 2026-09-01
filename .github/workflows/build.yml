@@ -156,10 +156,26 @@ jobs:
           git clone --depth=1 -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
           git clone --depth=1 -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
-          
+
           rm -rf ${SOC}/arch/arm64/boot/dts/vendor
           git clone --depth=1 -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
             || git clone --depth=1 https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+
+      - name: Detect kernel version
+        run: |
+
+          KVERSION=$(grep -m1 '^VERSION = ' ${SOC}/Makefile | awk '{print $3}')
+          KPATCHLEVEL=$(grep -m1 '^PATCHLEVEL = ' ${SOC}/Makefile | awk '{print $3}')
+          KSUBLEVEL=$(grep -m1 '^SUBLEVEL = ' ${SOC}/Makefile | awk '{print $3}')
+
+          if [[ -z "$KVERSION" || -z "$KPATCHLEVEL" || -z "$KSUBLEVEL" ]]; then
+            echo "::error::Couldn't parse VERSION/PATCHLEVEL/SUBLEVEL from ${SOC}/Makefile (got '${KVERSION}.${KPATCHLEVEL}.${KSUBLEVEL}'). Has the Makefile's header format changed on this branch?"
+            exit 1
+          fi
+
+          KERNEL_BASE="android12-${KVERSION}.${KPATCHLEVEL}.${KSUBLEVEL}"
+          echo "==> Detected kernel version: ${KERNEL_BASE}"
+          echo "KERNEL_BASE=${KERNEL_BASE}" >> $GITHUB_ENV
 
       - name: Download LLVM (latest stable release)
         run: |
@@ -187,7 +203,7 @@ jobs:
           mkdir llvm
           tar -xf "${ASSET}" -C llvm --strip-components=1
 
-      # ---- ccache-ECS (cctv18 style layered ccache) ----
+      
       - name: Configure ccache dir and key
         run: |
           echo "CCACHE_DIR=$HOME/.ccache_ingres" >> $GITHUB_ENV
@@ -237,7 +253,7 @@ jobs:
           export KBUILD_BUILD_USER="KingD2N"
           export KBUILD_BUILD_HOST="Ingres"
 
-          # ccache-ECS tuning: normalize paths/timestamps so cache hits across runs
+
           export CCACHE_COMPILERCHECK="none"
           export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
           export CCACHE_NOHASHDIR="true"
@@ -326,7 +342,7 @@ jobs:
               echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
             fi
 
-            
+
             NOMOUNT_COMMIT=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/dev | cut -f1 | cut -c1-7)
             if [[ -z "$NOMOUNT_COMMIT" ]]; then
               echo "::warning::Could not resolve maxsteeel/nomount's dev branch HEAD via git ls-remote - continuing anyway, but the release notes won't show a commit hash for this run."
@@ -374,7 +390,7 @@ jobs:
 
           DROIDSPACES_CONFIG=""
           if [[ "${{ inputs.droidspaces }}" == true ]]; then
-            
+
             apply_droidspaces_patch() {
               local patch_file="$1" label="$2"
               if patch -p1 -N --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
@@ -482,11 +498,10 @@ jobs:
           tar -xzf bpftool.tar.gz -C bpftool-bin
           chmod +x bpftool-bin/bpftool
 
-          
           wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
           unzip -q android-ndk-r27d-linux.zip
 
-          
+          # ---- Fetch only the eBPF-Source subfolder from Re-Kernel ----
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/Sakion-Team/Re-Kernel.git rekernel-ebpf-src
           cd rekernel-ebpf-src
@@ -589,7 +604,7 @@ jobs:
           | 📱 Device | POCO F4 GT (ingres) • Redmi K50G (ingres) |
           | 🟠 ROM Support | Official AOSP |
           | 🖥️ Kernel Name | ${KERNEL_NAME} |
-          | 🧬 Kernel Base | android12-5.10.267 |
+          | 🧬 Kernel Base | ${KERNEL_BASE} |
           | 🛠️ Build Scope | ZIP |
           | 📦 Source | ${{ inputs.kernel_source }} |
           | ⚔️ Kernel branch | ${{ inputs.kernel_branch }} |
