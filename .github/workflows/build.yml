@@ -91,7 +91,7 @@ on:
         default: true
 
       nomount:
-        description: "Add NoMount support (kernel VFS path redirection/injection, maxsteeel/nomount@dev - auto-updates to whatever's newest on that branch each run; may conflict with susfs since both patch fs/namei.c)"
+        description: "Add NoMount support (kernel VFS path redirection/injection, maxsteeel/nomount@master - auto-updates to whatever's newest on that branch each run; may conflict with susfs since both patch fs/namei.c)"
         required: true
         type: boolean
         default: true
@@ -343,15 +343,15 @@ jobs:
             fi
 
 
-            NOMOUNT_COMMIT=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/dev | cut -f1 | cut -c1-7)
+            NOMOUNT_COMMIT=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/master | cut -f1 | cut -c1-7)
             if [[ -z "$NOMOUNT_COMMIT" ]]; then
-              echo "::warning::Could not resolve maxsteeel/nomount's dev branch HEAD via git ls-remote - continuing anyway, but the release notes won't show a commit hash for this run."
+              echo "::warning::Could not resolve maxsteeel/nomount's master branch HEAD via git ls-remote - continuing anyway, but the release notes won't show a commit hash for this run."
               NOMOUNT_COMMIT="unknown"
             fi
             echo "NOMOUNT_COMMIT=${NOMOUNT_COMMIT}" >> $GITHUB_ENV
-            echo "==> NoMount: using maxsteeel/nomount@dev (${NOMOUNT_COMMIT})"
+            echo "==> NoMount: using maxsteeel/nomount@master (${NOMOUNT_COMMIT})"
 
-            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -s dev
+            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" | bash -s master
             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
             echo "::endgroup::"
           fi
@@ -589,7 +589,7 @@ jobs:
           fi
 
           if [[ "${{ inputs.nomount }}" == true ]]; then
-            nomount_checkbox="Supported (maxsteeel/nomount@dev@${NOMOUNT_COMMIT})"
+            nomount_checkbox="Supported (maxsteeel/nomount@master@${NOMOUNT_COMMIT})"
           else
             nomount_checkbox="Unsupported"
           fi
