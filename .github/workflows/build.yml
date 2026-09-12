@@ -118,6 +118,8 @@ jobs:
       checks: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Free up disk space
         run: |
@@ -153,13 +155,13 @@ jobs:
 
       - name: Clone Kernel Source
         run: |
-          git clone --depth=1 -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
-          git clone --depth=1 -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
+          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
+          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
 
           rm -rf ${SOC}/arch/arm64/boot/dts/vendor
-          git clone --depth=1 -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
-            || git clone --depth=1 https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
+            || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
 
       - name: Detect kernel version
         run: |
@@ -307,7 +309,7 @@ jobs:
 
           if [[ "${{ inputs.susfs }}" == true ]]; then
             
-            git clone -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+            git clone --recurse-submodules -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
             cd susfs
 
             if [[ -n "${{ inputs.susfs_commit }}" ]]; then
@@ -363,7 +365,7 @@ jobs:
           fi
 
           if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
-            git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
+            git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
             bash rekernel-src/Integrate/patches.sh
             echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/gki_defconfig
@@ -502,7 +504,7 @@ jobs:
           unzip -q android-ndk-r27d-linux.zip
 
           # ---- Fetch only the eBPF-Source subfolder from Re-Kernel ----
-          git clone --depth=1 --filter=blob:none --sparse \
+          git clone --depth=1 --recurse-submodules --shallow-submodules --filter=blob:none --sparse \
             https://github.com/Sakion-Team/Re-Kernel.git rekernel-ebpf-src
           cd rekernel-ebpf-src
           git sparse-checkout set eBPF-Source
@@ -537,7 +539,7 @@ jobs:
           fi
 
           ZIP_NAME="${ZIP_NAME}_$(date -u +"%Y%m%d_%H%M")"
-          git clone https://github.com/kingD2N/AnyKernel3.git
+          git clone --recurse-submodules https://github.com/kingD2N/AnyKernel3.git
 
           cp ${SOC}/out/arch/arm64/boot/Image AnyKernel3/Image
           cp ${SOC}/out/arch/arm64/boot/Image ./Image
