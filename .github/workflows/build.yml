@@ -61,13 +61,11 @@ on:
         default: true
 
       susfs_commit:
-        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Pinned to 7373f8d8 (6 Sept 2026) - commits after this (the SUS_KSTAT/statfs rework starting 10 Sept) ship a patch with the extern declaration for susfs_sus_kstat_spoof_vfs_statfs() placed after its first call site in fs/statfs.c, an upstream ordering bug that fails the build under -Werror regardless of this kernel_source. Confirmed independently in github.com/Numbersf/Action-Build issue #269. Clear this or bump the SHA once upstream fixes the ordering (check their commit log) or to test a newer commit yourself."
+        description: "Custom commit SHA for susfs4ksu (optional; leave empty to use the latest commit on gki-android12-5.10)"
         required: false
-        type: choice
-        default: 
-        options:
-          - Auto
-          - 7373f8d8
+        type: string
+        default: ""
+        
       BBG:
         description: "Add BBG support"
         required: true
