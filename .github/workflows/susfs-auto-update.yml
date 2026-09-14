@@ -1,0 +1,204 @@
+name: Auto Update SuSFS
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_check:
+        description: "Informational only right now - the check always runs; use this to leave a note in the run log for why you triggered it manually"
+        required: false
+        type: string
+        default: ""
+
+env:
+  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+  SUSFS_BRANCH: gki-android12-5.10
+  BUILD_WORKFLOW_FILE: build.yml
+  AUTO_BRANCH: auto/susfs-update
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read current pin + kernel_source defaults from build.yml
+        id: current
+        run: |
+          python3 - "${{ env.BUILD_WORKFLOW_FILE }}" << 'EOF'
+          import sys, yaml, os
+
+          with open(sys.argv[1]) as f:
+              data = yaml.safe_load(f)
+
+          # This repo's own CI conventions note the gotcha: a bare "on:" key
+          # parses as boolean True, not the string 'on'.
+          on_key = True if True in data else "on"
+          inputs = data[on_key]["workflow_dispatch"]["inputs"]
+
+          pin = inputs["susfs_commit"]["default"]
+          kernel_source = inputs["kernel_source"]["default"]
+          kernel_branch = inputs["kernel_branch"]["default"]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"pin={pin}\n")
+              out.write(f"kernel_source={kernel_source}\n")
+              out.write(f"kernel_branch={kernel_branch}\n")
+
+          print(f"==> Current susfs_commit pin: {pin}")
+          print(f"==> kernel_source: {kernel_source} @ {kernel_branch}")
+          EOF
+
+      - name: Check susfs4ksu for a newer commit
+        id: latest
+        run: |
+          LATEST_FULL=$(git ls-remote "${{ env.SUSFS_REPO }}" "refs/heads/${{ env.SUSFS_BRANCH }}" | cut -f1)
+          if [[ -z "$LATEST_FULL" ]]; then
+            echo "::error::Could not resolve the tip of ${{ env.SUSFS_BRANCH }} on ${{ env.SUSFS_REPO }} via git ls-remote."
+            exit 1
+          fi
+          LATEST_SHORT=$(echo "$LATEST_FULL" | cut -c1-8)
+          echo "==> Latest commit on ${{ env.SUSFS_BRANCH }}: ${LATEST_SHORT} (full: ${LATEST_FULL})"
+          echo "sha_full=${LATEST_FULL}" >> "$GITHUB_OUTPUT"
+          echo "sha_short=${LATEST_SHORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare against current pin
+        id: compare
+        run: |
+          CURRENT="${{ steps.current.outputs.pin }}"
+          LATEST="${{ steps.latest.outputs.sha_short }}"
+          if [[ "$CURRENT" == "$LATEST" ]]; then
+            echo "==> Already pinned to the latest commit (${CURRENT}). Nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "==> New commit available: ${CURRENT} -> ${LATEST}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clone kernel source + candidate susfs commit
+        if: steps.compare.outputs.changed == 'true'
+        id: clone
+        run: |
+          git clone --depth=1 --recurse-submodules --shallow-submodules \
+            -b "${{ steps.current.outputs.kernel_branch }}" \
+            "${{ steps.current.outputs.kernel_source }}" kernel_src
+
+          git clone --recurse-submodules -b "${{ env.SUSFS_BRANCH }}" "${{ env.SUSFS_REPO }}" susfs
+          cd susfs
+          git checkout "${{ steps.latest.outputs.sha_full }}"
+          cd ..
+
+          PATCH_FILE="susfs/kernel_patches/50_add_susfs_in_${{ env.SUSFS_BRANCH }}.patch"
+          if [[ ! -f "$PATCH_FILE" ]]; then
+            echo "::error::Expected patch file not found at ${PATCH_FILE} - susfs4ksu may have renamed/restructured kernel_patches/. Check the repo by hand."
+            echo "hard_fail=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cp "$PATCH_FILE" kernel_src/
+          cp susfs/kernel_patches/fs/* kernel_src/fs/
+          cp susfs/kernel_patches/include/linux/* kernel_src/include/linux/
+          echo "patch_name=$(basename "$PATCH_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Apply patch + run corrective fix + declare-before-use lint
+        if: steps.compare.outputs.changed == 'true' && steps.clone.outputs.hard_fail != 'true'
+        id: validate
+        run: |
+          cd kernel_src
+          if ! patch -p1 < "${{ steps.clone.outputs.patch_name }}"; then
+            echo "::error::susfs patch failed to apply cleanly against candidate commit ${{ steps.latest.outputs.sha_short }} - upstream context has drifted from what this kernel_source expects."
+            echo "result=patch_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Known-shape fix for the SUS_KSTAT/statfs.c declare-after-use bug
+          # (Numbersf/Action-Build#269); soft no-op if upstream already fixed it.
+          python3 "${GITHUB_WORKSPACE}/scripts/fix_susfs_statfs_ordering.py" fs/statfs.c
+
+          # Generalized declare-before-use lint across every file this patch
+          # touched, not just the one file with a known history of the bug.
+          mapfile -t TOUCHED < <(grep '^diff --git a/' "${{ steps.clone.outputs.patch_name }}" | sed 's#^diff --git a/\([^ ]*\).*#\1#')
+          if python3 "${GITHUB_WORKSPACE}/scripts/lint_declare_before_use.py" "${TOUCHED[@]}"; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=lint_failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the PR with the new pin
+        if: steps.compare.outputs.changed == 'true' && steps.validate.outputs.result == 'pass'
+        run: |
+          OLD_SHORT="${{ steps.current.outputs.pin }}"
+          NEW_SHORT="${{ steps.latest.outputs.sha_short }}"
+
+          python3 - "${{ env.BUILD_WORKFLOW_FILE }}" "$OLD_SHORT" "$NEW_SHORT" << 'EOF'
+          import sys
+          path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path) as f:
+              content = f.read()
+          old_line = f'default: "{old}"'
+          new_line = f'default: "{new}"'
+          n = content.count(old_line)
+          if n != 1:
+              sys.exit(f"expected exactly 1 occurrence of {old_line!r}, found {n}")
+          content = content.replace(old_line, new_line, 1)
+          with open(path, "w") as f:
+              f.write(content)
+          EOF
+
+          git config user.name "susfs-auto-update[bot]"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -B "${{ env.AUTO_BRANCH }}"
+          git add "${{ env.BUILD_WORKFLOW_FILE }}"
+          git commit -m "ci: bump susfs4ksu pin ${OLD_SHORT} -> ${NEW_SHORT}"
+          git push -f origin "${{ env.AUTO_BRANCH }}"
+
+          cat > pr_body.md << BODYEOF
+          Automated susfs4ksu bump on \`${{ env.SUSFS_BRANCH }}\`: \`${OLD_SHORT}\` -> \`${NEW_SHORT}\`.
+
+          Validated in this run:
+          - Patch applies cleanly against \`${{ steps.current.outputs.kernel_source }}@${{ steps.current.outputs.kernel_branch }}\`
+          - Declare-before-use lint passed on every file the patch touches
+          - Known SUS_KSTAT/statfs.c ordering bug (Numbersf/Action-Build#269) checked, and fixed automatically if still present
+
+          This is a heuristic check, not a full kernel build. A real build with this pin has also been triggered on \`${{ env.BUILD_WORKFLOW_FILE }}\` - check that Actions run before merging.
+          BODYEOF
+
+          if gh pr view "${{ env.AUTO_BRANCH }}" --json number >/dev/null 2>&1; then
+            gh pr edit "${{ env.AUTO_BRANCH }}" --body-file pr_body.md
+            echo "==> Updated existing PR"
+          else
+            gh pr create --title "ci: bump susfs4ksu pin to ${NEW_SHORT}" --body-file pr_body.md --head "${{ env.AUTO_BRANCH }}"
+          fi
+
+          gh workflow run "${{ env.BUILD_WORKFLOW_FILE }}" -f "susfs_commit=${NEW_SHORT}" \
+            || echo "::warning::Could not auto-trigger a validation build - run ${{ env.BUILD_WORKFLOW_FILE }} manually with susfs_commit=${NEW_SHORT}."
+
+      - name: File an issue if validation failed
+        if: steps.compare.outputs.changed == 'true' && steps.clone.outputs.hard_fail != 'true' && steps.validate.outputs.result != 'pass'
+        run: |
+          RESULT="${{ steps.validate.outputs.result }}"
+          NEW_SHORT="${{ steps.latest.outputs.sha_short }}"
+          EXISTING=$(gh issue list --search 'in:title "susfs4ksu" in:title "fails validation"' --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --body "Still failing as of $(date -u +%F): candidate \`${NEW_SHORT}\`, result \`${RESULT}\`. Pin unchanged at \`${{ steps.current.outputs.pin }}\`."
+          else
+            gh issue create \
+              --title "susfs4ksu ${NEW_SHORT} fails validation (${RESULT})" \
+              --body "Auto-update found a newer susfs4ksu commit (\`${NEW_SHORT}\` on \`${{ env.SUSFS_BRANCH }}\`) but it failed automated validation (\`${RESULT}\`). Pin left at \`${{ steps.current.outputs.pin }}\`. Check this workflow run's log for the patch/lint output."
+          fi
+
+      - name: File an issue if the expected patch file is missing
+        if: steps.compare.outputs.changed == 'true' && steps.clone.outputs.hard_fail == 'true'
+        run: |
+          gh issue create \
+            --title "susfs4ksu auto-update: patch file not found at expected path" \
+            --body "susfs4ksu@${{ steps.latest.outputs.sha_short }} on ${{ env.SUSFS_BRANCH }} doesn't have kernel_patches/50_add_susfs_in_${{ env.SUSFS_BRANCH }}.patch at the expected path. The repo layout may have changed upstream - check by hand."
