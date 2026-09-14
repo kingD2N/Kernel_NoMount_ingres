@@ -308,14 +308,17 @@ jobs:
           esac
 
           if [[ "${{ inputs.susfs }}" == true ]]; then
-            
-            git clone --recurse-submodules -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
-            cd susfs
-
+            # Shallow clone when just tracking the branch tip (the common
+            # case); only pay for full history when pinning to a specific
+            # older commit, since checking that commit out needs it.
             if [[ -n "${{ inputs.susfs_commit }}" ]]; then
+              git clone --recurse-submodules -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              cd susfs
               echo "==> SUSFS: pinning to custom commit ${{ inputs.susfs_commit }}"
               git checkout "${{ inputs.susfs_commit }}"
             else
+              git clone --depth=1 --recurse-submodules -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              cd susfs
               echo "==> SUSFS: using latest commit on branch gki-android12-5.10"
             fi
 
@@ -326,7 +329,20 @@ jobs:
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
             cd ..
-            patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+
+            # Always tracking the branch tip means any upstream change to
+            # this patch's context (or drift from BBG/NoMount/DroidSpaces
+            # already having touched the same fs/ files) can break
+            # application with no warning - this is the actual mechanism
+            # behind "worked yesterday, fails today after updating susfs".
+            # Fail loudly with a clear pointer instead of a bare patch(1)
+            # hunk dump, and leave any .rej files for the artifact-upload
+            # step below to pick up.
+            if ! patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch; then
+              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT}. This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
+              exit 1
+            fi
+
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
@@ -483,6 +499,14 @@ jobs:
           name: resolved-defconfig-${{ inputs.ksu_type }}
           path: resolved_defconfig.txt
           if-no-files-found: warn
+
+      - name: Upload SuSFS patch rejects (debug artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: susfs-patch-rejects-${{ inputs.ksu_type }}
+          path: ${{ env.SOC }}/**/*.rej
+          if-no-files-found: ignore
 
       - name: Build Re-Kernel (eBPF)
         if: ${{ inputs.rekernel_ebpf }}
