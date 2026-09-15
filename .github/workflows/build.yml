@@ -61,7 +61,7 @@ on:
         default: true
 
       susfs_commit:
-        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Leave empty (default) to always track the latest commit on the branch tip - the SUS_KSTAT/statfs extern-declaration ordering bug from the 10 Sept 2026 rework (Numbersf/Action-Build issue #269) is now worked around automatically in the Compile Kernel step via the kernel_fixes/fs/stat.c and fs/statfs.c overwrite, so pinning is no longer required to avoid it. Set a short SHA here only if you want to pin/test a specific commit."
+        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Leave empty (default) to always track the latest commit on the branch tip - the SUS_KSTAT/statfs extern-declaration bug from the 10 Sept 2026 rework (Numbersf/Action-Build issue #269) is now worked around automatically in the Compile Kernel step (missing extern decls are patched into fs/stat.c and fs/statfs.c in place at build time - no separate files kept in this repo to remember to maintain), so pinning is no longer required to avoid it. Set a short SHA here only if you want to pin/test a specific commit."
         required: false
         type: string
         default: ""
@@ -120,26 +120,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-
-      - name: Verify kernel_fixes files exist (susfs)
-        if: ${{ inputs.susfs }}
-        run: |
-          # Fail fast (seconds, not the ~5 minutes it took to hit this as a
-          # bare "cp: cannot stat" at the very end of Compile Kernel) if
-          # these two files are missing from the repo. The Compile Kernel
-          # step below overwrites fs/stat.c and fs/statfs.c with them right
-          # after the SuSFS patch applies (see susfs_commit input
-          # description for why they need to exist at all).
-          missing=0
-          for f in kernel_fixes/fs/stat.c kernel_fixes/fs/statfs.c; do
-            if [[ ! -f "$f" ]]; then
-              echo "::error::${f} not found in this repo (checked out at ${GITHUB_WORKSPACE}). Commit it before running with susfs enabled, or the build will fail ~5 minutes in, right after the SuSFS patch step succeeds."
-              missing=1
-            fi
-          done
-          if [[ "$missing" == "1" ]]; then
-            exit 1
-          fi
 
       - name: Free up disk space
         run: |
@@ -370,9 +350,9 @@ jobs:
             # Fix (13 Sept 2026+): fs/stat.c and fs/statfs.c don't need
             # this patch's hunks at all - kernel_patches/fs/* above already
             # dropped in susfs4ksu's own complete, pre-patched copies of
-            # both files, and kernel_fixes/fs/*.c overwrites them again
-            # below regardless of what happens here. Their hunks in this
-            # unified patch are pure redundancy for us.
+            # both files, and the inline fixup below patches them again
+            # in place regardless of what happens here. Their hunks in
+            # this unified patch are pure redundancy for us.
             # That used to be harmless (patch -N quietly no-ops a hunk it
             # finds already applied), but during the ongoing SUS_KSTAT/
             # statfs rework, susfs4ksu's standalone fs/stat.c/fs/statfs.c
@@ -410,12 +390,55 @@ jobs:
               exit 1
             fi
 
-            # Fix: once the SuSFS patch has applied cleanly, overwrite
-            # fs/stat.c and fs/statfs.c with the pre-fixed versions kept in
-            # this repo (see susfs_commit description above re: the
-            # SUS_KSTAT/statfs extern-declaration ordering bug).
-            cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/stat.c" fs/stat.c
-            cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/statfs.c" fs/statfs.c
+            # Fix: once the SuSFS patch has applied cleanly, patch the
+            # missing extern declarations directly into fs/stat.c and
+            # fs/statfs.c in place (see susfs_commit description above) -
+            # generated here instead of kept as separately-committed
+            # "golden" files in this repo, so there is nothing extra to
+            # remember to commit or keep in sync as susfs4ksu's ongoing
+            # rework keeps moving. Each fix only fires if the symbol is
+            # referenced and not already declared, so this is a no-op
+            # once upstream fixes it on their end.
+            SUSFS_EXTERN_FIXES=(
+              "fs/stat.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/stat.c:susfs_is_current_proc_no_su:CONFIG_KSU_SUSFS"
+              "fs/statfs.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/statfs.c:susfs_is_current_proc_umounted:CONFIG_KSU_SUSFS_SUS_MOUNT"
+            )
+
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} already declared"
+                continue
+              fi
+              if ! grep -qE "${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} not referenced, nothing to fix"
+                continue
+              fi
+              fx_lastinc=$(grep -n '^#include' "$fx_file" | tail -1 | cut -d: -f1)
+              if [[ -z "$fx_lastinc" ]]; then
+                echo "::error::no #include lines found in ${fx_file} - cannot find a safe insertion point. susfs4ksu file structure has likely changed more than this fixup accounts for."
+                exit 1
+              fi
+              {
+                echo "#ifdef ${fx_guard}"
+                echo "extern bool ${fx_func}(void);"
+                echo "#endif"
+              } > /tmp/_susfs_extern_block.txt
+              sed -i "${fx_lastinc}r /tmp/_susfs_extern_block.txt" "$fx_file"
+              echo "[fixed] ${fx_file}: added extern for ${fx_func}"
+            done
+
+            # Self-check: fail loudly instead of silently proceeding broken.
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "${fx_func}[[:space:]]*\(" "$fx_file" && ! grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "::error::${fx_file} still calls ${fx_func}() with no extern declaration after the fixup"
+                exit 1
+              fi
+            done
+            echo "susfs stat.c/statfs.c extern check: OK"
 
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
