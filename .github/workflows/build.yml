@@ -61,10 +61,10 @@ on:
         default: true
 
       susfs_commit:
-        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Left EMPTY by default: this build always clones the current tip of that branch, so it's genuinely 'latest' every run rather than a hash I hand-pick and could get wrong again - a prior default (dd94c3a1) came from a susfs4ksu tarball whose own patch was named for gki-android13-5.10, a completely different branch with its own commit history (separate GKI KMI generations), and checking it out here landed on an unrelated commit and broke the build. The 'Apply corrective susfs fixups' + lint steps below run on whatever gets checked out: they auto-fix the known SUS_KSTAT/statfs.c declare-after-use bug (github.com/Numbersf/Action-Build issue #269) if that exact shape is present, and hard-fail the build with a clear annotation if fs/statfs.c or fs/stat.c still has any declare-before-use problem afterward - so tracking the tip stays safe without needing a pin. Set this to a specific SHA only if you want a reproducible build pinned to a commit you've personally confirmed; susfs-auto-update.yml validates candidates the same way (against this exact branch, via git ls-remote) before ever suggesting one."
+        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Pinned to 7373f8d8 (6 Sept 2026) - commits after this (the SUS_KSTAT/statfs rework starting 10 Sept) ship a patch with the extern declaration for susfs_sus_kstat_spoof_vfs_statfs() placed after its first call site in fs/statfs.c, an upstream ordering bug that fails the build under -Werror regardless of this kernel_source. Confirmed independently in github.com/Numbersf/Action-Build issue #269. Clear this or bump the SHA once upstream fixes the ordering (check their commit log) or to test a newer commit yourself."
         required: false
         type: string
-        default: ""
+        default: "7373f8d8"
 
       BBG:
         description: "Add BBG support"
@@ -328,6 +328,13 @@ jobs:
             cp ./kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ..
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
+
+            # Fix: susfs.c calls security_* helpers without directly
+            # including linux/security.h (relies on a transitive include
+            # that doesn't always survive on this kernel_source/LLVM combo).
+            # Add it explicitly to avoid implicit-declaration errors.
+            sed -i '1i #include <linux/security.h>' ../fs/susfs.c
+
             cd ..
 
             # Always tracking the branch tip means any upstream change to
@@ -343,69 +350,12 @@ jobs:
               exit 1
             fi
 
-            # --- susfs4ksu SUS_KSTAT/statfs.c ordering-bug auto-fix ---
-            # Upstream's 10 Sept refactor declares susfs_sus_kstat_spoof_vfs_statfs()/
-            # susfs_is_inode_sus_kstat() as extern AFTER susfs_statfs_by_dentry(),
-            # which already calls the former -- an implicit-declaration error under
-            # -Werror. Confirmed independently at Numbersf/Action-Build#269. This
-            # hoists the two extern lines back above the function that calls them;
-            # it's a documented soft no-op once upstream fixes the ordering itself.
-            python3 - "fs/statfs.c" << 'FIXEOF'
-          import sys, pathlib
-          target = pathlib.Path(sys.argv[1])
-          src = target.read_text()
-          misplaced_tail = (
-              "EXPORT_SYMBOL(vfs_get_fsid);\n\n"
-              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
-              "extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);\n"
-              "extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n"
-              "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
-              "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
-          )
-          fixed_tail = "EXPORT_SYMBOL(vfs_get_fsid);\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
-          fn_header = (
-              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
-              "static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bool *is_fuse)\n"
-          )
-          fixed_fn_header = (
-              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
-              "extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);\n"
-              "extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n"
-              "static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bool *is_fuse)\n"
-          )
-          ok = (misplaced_tail in src and src.count(misplaced_tail) == 1
-                and fn_header in src and src.count(fn_header) == 1)
-          if ok:
-              src = src.replace(misplaced_tail, fixed_tail, 1).replace(fn_header, fixed_fn_header, 1)
-              target.write_text(src)
-              print("::notice::Applied fs/statfs.c declare-before-use fix (susfs4ksu SUS_KSTAT refactor, see Numbersf/Action-Build#269).")
-          else:
-              print("::notice::susfs statfs.c ordering-bug pattern not found -- upstream may already carry the fix; skipping (soft no-op).")
-          FIXEOF
-
-            python3 - "fs/statfs.c" "fs/stat.c" << 'LINTEOF'
-          import re, sys
-          EXTERN_RE = re.compile(r'^\s*extern\b[^;{]*?\b(\w+)\s*\(', re.MULTILINE)
-          any_hit = False
-          for path in sys.argv[1:]:
-              text = open(path).read()
-              lines_ = text.splitlines()
-              for m in EXTERN_RE.finditer(text):
-                  name = m.group(1)
-                  decl_line = text.count('\n', 0, m.start()) + 1
-                  call_re = re.compile(r'\b' + re.escape(name) + r'\s*\(')
-                  for i, line in enumerate(lines_[:decl_line - 1], start=1):
-                      if call_re.search(line) and not re.match(r'^\s*extern\b', line):
-                          print(f"::error file={path},line={i}::'{name}' called on line {i} but its extern "
-                              f"declaration is on line {decl_line} -- declare-after-use, fails as "
-                              "implicit-declaration under -Werror")
-                          any_hit = True
-                          break
-          if any_hit:
-              print("::error::Declare-before-use lint failed after the corrective step -- fix fs/statfs.c or fs/stat.c by hand before this build can be trusted.")
-              sys.exit(1)
-          print("::notice::susfs declare-before-use lint passed for fs/statfs.c and fs/stat.c.")
-          LINTEOF
+            # Fix: once the SuSFS patch has applied cleanly, overwrite
+            # fs/stat.c and fs/statfs.c with the pre-fixed versions kept in
+            # this repo (see susfs_commit description above re: the
+            # SUS_KSTAT/statfs extern-declaration ordering bug).
+            cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/stat.c" fs/stat.c
+            cp "${GITHUB_WORKSPACE}/kernel_fixes/fs/statfs.c" fs/statfs.c
 
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
