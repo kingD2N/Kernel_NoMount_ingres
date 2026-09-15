@@ -61,11 +61,11 @@ on:
         default: true
 
       susfs_commit:
-        description: "Custom commit SHA for susfs4ksu (optional; leave empty to use the latest commit on gki-android12-5.10)"
+        description: "Commit SHA for susfs4ksu on gki-android12-5.10. Pinned to 7373f8d8 (6 Sept 2026), verified working. A prior default of dd94c3a1 was wrong: that hash came from a susfs4ksu tarball whose own patch was named for gki-android13-5.10, a different branch with an independent commit history from the gki-android12-5.10 this clone actually uses (separate GKI KMI generations) - checking it out here landed on an unrelated commit and broke the build (cp: 50_add_susfs_in_gki-android12-5.10.patch: No such file or directory). The SUS_KSTAT/statfs rework starting 10 Sept (on whichever branch it lands - confirmed independently in github.com/Numbersf/Action-Build issue #269) still ships fs/statfs.c with the extern declaration for susfs_sus_kstat_spoof_vfs_statfs() placed after its first call site, an ordering bug that fails under -Werror; the 'Apply corrective susfs fixups' step below hoists that declaration automatically (soft no-op if not present) whenever this pin is next bumped past that point. Bump this SHA only to a commit confirmed to exist on gki-android12-5.10 specifically - susfs-auto-update.yml does this safely by querying that branch directly via git ls-remote rather than assuming a hash from elsewhere applies."
         required: false
         type: string
-        default: ""
-        
+        default: "7373f8d8"
+
       BBG:
         description: "Add BBG support"
         required: true
@@ -342,6 +342,70 @@ jobs:
               echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT}. This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
               exit 1
             fi
+
+            # --- susfs4ksu SUS_KSTAT/statfs.c ordering-bug auto-fix ---
+            # Upstream's 10 Sept refactor declares susfs_sus_kstat_spoof_vfs_statfs()/
+            # susfs_is_inode_sus_kstat() as extern AFTER susfs_statfs_by_dentry(),
+            # which already calls the former -- an implicit-declaration error under
+            # -Werror. Confirmed independently at Numbersf/Action-Build#269. This
+            # hoists the two extern lines back above the function that calls them;
+            # it's a documented soft no-op once upstream fixes the ordering itself.
+            python3 - "fs/statfs.c" << 'FIXEOF'
+          import sys, pathlib
+          target = pathlib.Path(sys.argv[1])
+          src = target.read_text()
+          misplaced_tail = (
+              "EXPORT_SYMBOL(vfs_get_fsid);\n\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+              "extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);\n"
+              "extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n"
+              "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+          )
+          fixed_tail = "EXPORT_SYMBOL(vfs_get_fsid);\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+          fn_header = (
+              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+              "static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bool *is_fuse)\n"
+          )
+          fixed_fn_header = (
+              "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+              "extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);\n"
+              "extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n"
+              "static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bool *is_fuse)\n"
+          )
+          ok = (misplaced_tail in src and src.count(misplaced_tail) == 1
+                and fn_header in src and src.count(fn_header) == 1)
+          if ok:
+              src = src.replace(misplaced_tail, fixed_tail, 1).replace(fn_header, fixed_fn_header, 1)
+              target.write_text(src)
+              print("::notice::Applied fs/statfs.c declare-before-use fix (susfs4ksu SUS_KSTAT refactor, see Numbersf/Action-Build#269).")
+          else:
+              print("::notice::susfs statfs.c ordering-bug pattern not found -- upstream may already carry the fix; skipping (soft no-op).")
+          FIXEOF
+
+            python3 - "fs/statfs.c" "fs/stat.c" << 'LINTEOF'
+          import re, sys
+          EXTERN_RE = re.compile(r'^\s*extern\b[^;{]*?\b(\w+)\s*\(', re.MULTILINE)
+          any_hit = False
+          for path in sys.argv[1:]:
+              text = open(path).read()
+              lines_ = text.splitlines()
+              for m in EXTERN_RE.finditer(text):
+                  name = m.group(1)
+                  decl_line = text.count('\n', 0, m.start()) + 1
+                  call_re = re.compile(r'\b' + re.escape(name) + r'\s*\(')
+                  for i, line in enumerate(lines_[:decl_line - 1], start=1):
+                      if call_re.search(line) and not re.match(r'^\s*extern\b', line):
+                          print(f"::error file={path},line={i}::'{name}' called on line {i} but its extern "
+                              f"declaration is on line {decl_line} -- declare-after-use, fails as "
+                              "implicit-declaration under -Werror")
+                          any_hit = True
+                          break
+          if any_hit:
+              print("::error::Declare-before-use lint failed after the corrective step -- fix fs/statfs.c or fs/stat.c by hand before this build can be trusted.")
+              sys.exit(1)
+          print("::notice::susfs declare-before-use lint passed for fs/statfs.c and fs/stat.c.")
+          LINTEOF
 
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
