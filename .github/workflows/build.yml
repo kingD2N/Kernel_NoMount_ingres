@@ -345,7 +345,17 @@ jobs:
             # Fail loudly with a clear pointer instead of a bare patch(1)
             # hunk dump, and leave any .rej files for the artifact-upload
             # step below to pick up.
-            if ! patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch; then
+            #
+            # -N (--forward): kernel_patches/fs/ already ships complete,
+            # pre-patched fs/stat.c and fs/statfs.c, which the cp above
+            # copies in before this diff runs. The unified patch below also
+            # carries hunks for those same two files, so patch(1) correctly
+            # notices they're already applied and would otherwise prompt
+            # "Reversed (or previously applied) patch detected!" and count
+            # those hunks as failed/rejected when run non-interactively.
+            # -N tells it to silently skip only hunks that are genuinely
+            # already applied, without masking a real mismatch elsewhere.
+            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.patch; then
               echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT}. This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
               exit 1
             fi
