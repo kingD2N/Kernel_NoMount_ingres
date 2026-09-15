@@ -121,6 +121,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Verify kernel_fixes files exist (susfs)
+        if: ${{ inputs.susfs }}
+        run: |
+          # Fail fast (seconds, not the ~5 minutes it took to hit this as a
+          # bare "cp: cannot stat" at the very end of Compile Kernel) if
+          # these two files are missing from the repo. The Compile Kernel
+          # step below overwrites fs/stat.c and fs/statfs.c with them right
+          # after the SuSFS patch applies (see susfs_commit input
+          # description for why they need to exist at all).
+          missing=0
+          for f in kernel_fixes/fs/stat.c kernel_fixes/fs/statfs.c; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::${f} not found in this repo (checked out at ${GITHUB_WORKSPACE}). Commit it before running with susfs enabled, or the build will fail ~5 minutes in, right after the SuSFS patch step succeeds."
+              missing=1
+            fi
+          done
+          if [[ "$missing" == "1" ]]; then
+            exit 1
+          fi
+
       - name: Free up disk space
         run: |
           
