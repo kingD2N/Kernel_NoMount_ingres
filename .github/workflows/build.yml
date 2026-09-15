@@ -151,6 +151,7 @@ jobs:
           ccache \
           zstd \
           unzip \
+          patchutils \
           gcc-aarch64-linux-gnu
 
       - name: Clone Kernel Source
@@ -346,17 +347,46 @@ jobs:
             # hunk dump, and leave any .rej files for the artifact-upload
             # step below to pick up.
             #
-            # -N (--forward): kernel_patches/fs/ already ships complete,
-            # pre-patched fs/stat.c and fs/statfs.c, which the cp above
-            # copies in before this diff runs. The unified patch below also
-            # carries hunks for those same two files, so patch(1) correctly
-            # notices they're already applied and would otherwise prompt
-            # "Reversed (or previously applied) patch detected!" and count
-            # those hunks as failed/rejected when run non-interactively.
-            # -N tells it to silently skip only hunks that are genuinely
-            # already applied, without masking a real mismatch elsewhere.
-            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.patch; then
-              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT}. This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
+            # Fix (13 Sept 2026+): fs/stat.c and fs/statfs.c don't need
+            # this patch's hunks at all - kernel_patches/fs/* above already
+            # dropped in susfs4ksu's own complete, pre-patched copies of
+            # both files, and kernel_fixes/fs/*.c overwrites them again
+            # below regardless of what happens here. Their hunks in this
+            # unified patch are pure redundancy for us.
+            # That used to be harmless (patch -N quietly no-ops a hunk it
+            # finds already applied), but during the ongoing SUS_KSTAT/
+            # statfs rework, susfs4ksu's standalone fs/stat.c/fs/statfs.c
+            # and this same patch's hunks for those two files have drifted
+            # out of sync with EACH OTHER upstream (see Numbersf/Action-
+            # Build#269 for the sibling case) - so -N's "already applied"
+            # check no longer matches and every hunk for just these two
+            # files hard-fails (patch-rejects artifact showed 6/6 and 3/3
+            # hunks rejected on fs/stat.c and fs/statfs.c, every other
+            # file in the same patch applying fine).
+            # Strip those two files out of the patch before applying it,
+            # rather than pinning susfs_commit to dodge it - every other
+            # file's hunks (the ones that actually matter here) are
+            # untouched and still fail loudly below if THEY drift.
+            filterdiff -x '*fs/stat.c' -x '*fs/statfs.c' \
+              50_add_susfs_in_gki-android12-5.10.patch \
+              > 50_add_susfs_in_gki-android12-5.10.filtered.patch
+
+            if [[ ! -s 50_add_susfs_in_gki-android12-5.10.filtered.patch ]]; then
+              echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook instead of just fs/stat.c and fs/statfs.c."
+              exit 1
+            fi
+
+            if grep -qE '^\+\+\+ .*fs/stat(fs)?\.c' 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              echo "::error::fs/stat.c or fs/statfs.c hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust the -x patterns."
+              exit 1
+            fi
+
+            # -N (--forward): still worth keeping for any other overlap
+            # (e.g. BBG/NoMount/DroidSpaces touching the same fs/ files) -
+            # this only ever silently skips a hunk that's genuinely already
+            # applied; anything that doesn't match still fails loudly below.
+            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (fs/stat.c and fs/statfs.c hunks were excluded before this ran - see comment above, not the cause here). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
               exit 1
             fi
 
