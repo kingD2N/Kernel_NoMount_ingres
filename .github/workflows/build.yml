@@ -330,6 +330,8 @@ jobs:
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
 
+            sed -i '1i #include <linux/security.h>' ../fs/susfs.c            
+
             cd ..
             patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
             
