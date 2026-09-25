@@ -334,7 +334,6 @@ jobs:
             # including linux/security.h (relies on a transitive include
             # that doesn't always survive on this kernel_source/LLVM combo).
             # Add it explicitly to avoid implicit-declaration errors.
-            sed -i '1i #include <linux/security.h>' ../fs/susfs.c
 
             SUSFS_VERSION_TAG=$(sed -n 's/.*SUSFS_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' kernel_patches/include/linux/susfs.h | head -n1)
             echo "SUSFS_VERSION_TAG=${SUSFS_VERSION_TAG:-unknown}" >> $GITHUB_ENV
