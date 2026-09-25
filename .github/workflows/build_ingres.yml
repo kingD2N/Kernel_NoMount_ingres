@@ -334,13 +334,115 @@ jobs:
             # including linux/security.h (relies on a transitive include
             # that doesn't always survive on this kernel_source/LLVM combo).
             # Add it explicitly to avoid implicit-declaration errors.
+            sed -i '1i #include <linux/security.h>' ../fs/susfs.c
 
             SUSFS_VERSION_TAG=$(sed -n 's/.*SUSFS_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' kernel_patches/include/linux/susfs.h | head -n1)
             echo "SUSFS_VERSION_TAG=${SUSFS_VERSION_TAG:-unknown}" >> $GITHUB_ENV
             echo "==> SUSFS: detected version ${SUSFS_VERSION_TAG:-unknown} from susfs.h"
 
             cd ..
-            patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+
+            # Always tracking the branch tip means any upstream change to
+            # this patch's context (or drift from BBG/NoMount/DroidSpaces
+            # already having touched the same fs/ files) can break
+            # application with no warning - this is the actual mechanism
+            # behind "worked yesterday, fails today after updating susfs".
+            # Fail loudly with a clear pointer instead of a bare patch(1)
+            # hunk dump, and leave any .rej files for the artifact-upload
+            # step below to pick up.
+            #
+            # Fix (13 Sept 2026+): fs/stat.c and fs/statfs.c don't need
+            # this patch's hunks at all - kernel_patches/fs/* above already
+            # dropped in susfs4ksu's own complete, pre-patched copies of
+            # both files, and the inline fixup below patches them again
+            # in place regardless of what happens here. Their hunks in
+            # this unified patch are pure redundancy for us.
+            # That used to be harmless (patch -N quietly no-ops a hunk it
+            # finds already applied), but during the ongoing SUS_KSTAT/
+            # statfs rework, susfs4ksu's standalone fs/stat.c/fs/statfs.c
+            # and this same patch's hunks for those two files have drifted
+            # out of sync with EACH OTHER upstream (see Numbersf/Action-
+            # Build#269 for the sibling case) - so -N's "already applied"
+            # check no longer matches and every hunk for just these two
+            # files hard-fails (patch-rejects artifact showed 6/6 and 3/3
+            # hunks rejected on fs/stat.c and fs/statfs.c, every other
+            # file in the same patch applying fine).
+            # Strip those two files out of the patch before applying it,
+            # rather than pinning susfs_commit to dodge it - every other
+            # file's hunks (the ones that actually matter here) are
+            # untouched and still fail loudly below if THEY drift.
+            filterdiff -x '*fs/stat.c' -x '*fs/statfs.c' \
+              50_add_susfs_in_gki-android12-5.10.patch \
+              > 50_add_susfs_in_gki-android12-5.10.filtered.patch
+
+            if [[ ! -s 50_add_susfs_in_gki-android12-5.10.filtered.patch ]]; then
+              echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook instead of just fs/stat.c and fs/statfs.c."
+              exit 1
+            fi
+
+            if grep -qE '^\+\+\+ .*fs/stat(fs)?\.c' 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              echo "::error::fs/stat.c or fs/statfs.c hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust the -x patterns."
+              exit 1
+            fi
+
+            # -N (--forward): still worth keeping for any other overlap
+            # (e.g. BBG/NoMount/DroidSpaces touching the same fs/ files) -
+            # this only ever silently skips a hunk that's genuinely already
+            # applied; anything that doesn't match still fails loudly below.
+            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (fs/stat.c and fs/statfs.c hunks were excluded before this ran - see comment above, not the cause here). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
+              exit 1
+            fi
+
+            # Fix: once the SuSFS patch has applied cleanly, patch the
+            # missing extern declarations directly into fs/stat.c and
+            # fs/statfs.c in place (see susfs_commit description above) -
+            # generated here instead of kept as separately-committed
+            # "golden" files in this repo, so there is nothing extra to
+            # remember to commit or keep in sync as susfs4ksu's ongoing
+            # rework keeps moving. Each fix only fires if the symbol is
+            # referenced and not already declared, so this is a no-op
+            # once upstream fixes it on their end.
+            SUSFS_EXTERN_FIXES=(
+              "fs/stat.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/stat.c:susfs_is_current_proc_no_su:CONFIG_KSU_SUSFS"
+              "fs/statfs.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/statfs.c:susfs_is_current_proc_umounted:CONFIG_KSU_SUSFS_SUS_MOUNT"
+            )
+
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} already declared"
+                continue
+              fi
+              if ! grep -qE "${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} not referenced, nothing to fix"
+                continue
+              fi
+              fx_lastinc=$(grep -n '^#include' "$fx_file" | tail -1 | cut -d: -f1)
+              if [[ -z "$fx_lastinc" ]]; then
+                echo "::error::no #include lines found in ${fx_file} - cannot find a safe insertion point. susfs4ksu file structure has likely changed more than this fixup accounts for."
+                exit 1
+              fi
+              {
+                echo "#ifdef ${fx_guard}"
+                echo "extern bool ${fx_func}(void);"
+                echo "#endif"
+              } > /tmp/_susfs_extern_block.txt
+              sed -i "${fx_lastinc}r /tmp/_susfs_extern_block.txt" "$fx_file"
+              echo "[fixed] ${fx_file}: added extern for ${fx_func}"
+            done
+
+            # Self-check: fail loudly instead of silently proceeding broken.
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "${fx_func}[[:space:]]*\(" "$fx_file" && ! grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "::error::${fx_file} still calls ${fx_func}() with no extern declaration after the fixup"
+                exit 1
+              fi
+            done
+            echo "susfs stat.c/statfs.c extern check: OK"
 
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
