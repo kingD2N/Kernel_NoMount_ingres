@@ -444,6 +444,40 @@ jobs:
             done
             echo "susfs stat.c/statfs.c extern check: OK"
 
+            # Fix: same SUS_KSTAT/statfs rework as the extern fixup above,
+            # one step further along. susfs.c (susfs_mark_inode_sus_kstat)
+            # now calls two non-static wrapper functions around fs/statfs.c's
+            # own static statfs_by_dentry()/calculate_f_flags() - neither
+            # wrapper is defined yet in kernel_patches/fs/statfs.c or in
+            # this patch's (excluded) hunks for that file, so susfs.c
+            # compiles cleanly (it already has a visible prototype for
+            # both, presumably from include/linux/susfs.h) and this only
+            # surfaces as "undefined symbol" at the final vmlinux link.
+            # Both wrapped functions are stock, unmodified fs/statfs.c
+            # internals with a stable signature well predating this fork,
+            # so a thin forwarding wrapper next to them is safe. Guarded
+            # the same way as the fixup above - a no-op once susfs4ksu
+            # ships the wrappers itself.
+            SUSFS_MISSING_WRAPPERS=()
+            for fx_wrapper in statfs_by_dentry_wrapper calculate_f_flags_wrapper; do
+              if ! grep -q "${fx_wrapper}" fs/statfs.c; then
+                SUSFS_MISSING_WRAPPERS+=("$fx_wrapper")
+              fi
+            done
+
+            if [[ ${#SUSFS_MISSING_WRAPPERS[@]} -gt 0 ]]; then
+              if ! grep -qE '^static int statfs_by_dentry\(' fs/statfs.c || ! grep -qE '^static int calculate_f_flags\(' fs/statfs.c; then
+                echo "::error::statfs_by_dentry()/calculate_f_flags() not found in fs/statfs.c in the expected static-function form - susfs4ksu's rework has moved further than this fixup accounts for. Missing wrappers: ${SUSFS_MISSING_WRAPPERS[*]}"
+                exit 1
+              fi
+              {
+                echo ""
+                echo "int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf) { return statfs_by_dentry(dentry, buf); }"
+                echo "int calculate_f_flags_wrapper(struct vfsmount *mnt) { return calculate_f_flags(mnt); }"
+              } >> fs/statfs.c
+              echo "[fixed] fs/statfs.c: added ${SUSFS_MISSING_WRAPPERS[*]}"
+            fi
+
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
