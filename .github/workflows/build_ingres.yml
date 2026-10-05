@@ -42,6 +42,7 @@ on:
           - KernelSU-Next
           - KowSU
           - ReSukiSU
+          - BakaSU
           - SukiSUUltra
 
       custom_name:
