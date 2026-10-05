@@ -35,7 +35,7 @@ on:
         description: "KernelSU Version"
         required: true
         type: choice
-        default: "ReSukiSU"
+        default: "BakaSU"
         options:
           - None
           - Official-KernelSU
