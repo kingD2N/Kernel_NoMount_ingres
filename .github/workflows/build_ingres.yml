@@ -45,6 +45,12 @@ on:
           - BakaSU
           - SukiSUUltra
 
+      bakasu_ref:
+        description: "Only used for ksu_type BakaSU / ReSukiSU (the same project - ReSukiSU was renamed to BakaSU). Tag, branch or commit SHA of Baka-SU/BakaSU to build. Leave empty (default) to track main: since 10 Oct 2026 main hard-stops every susfs build (kernel/tools/susfs_compat.mk, 'Please wait susfs update'), so while that is the case the build falls back to the last known-good commit (BAKASU_KNOWN_GOOD in the job env) and returns to main by itself once BakaSU lifts the stop. Set a ref to build exactly that one - it then fails within seconds, instead of after ~15 min of compiling, if the ref is blocked."
+        required: false
+        type: string
+        default: ""
+
       custom_name:
         description: "kernel"
         required: false
@@ -110,6 +116,11 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         SOC: sm8450
         CCACHE_KEY: ccache-ecsv3-ingres-sm8450
+        # Last Baka-SU/BakaSU commit (5 Oct 2026, just before the 8 Oct selinux_hide
+        # changes) that builds with susfs4ksu's gki-android12-5.10 patch. Only used as
+        # the automatic fallback while BakaSU main is blocked - see setup_bakasu in
+        # the "Compile Kernel" step. Bump it once a newer commit is confirmed to work.
+        BAKASU_KNOWN_GOOD: "9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
         # Public link of your Telegram group (shown as "JOIN" button in the push).
         TG_GROUP_URL: ""
     runs-on: ubuntu-latest
@@ -237,6 +248,8 @@ jobs:
             ${{ env.CCACHE_REAL_KEY }}-
 
       - name: Compile Kernel
+        env:
+          BAKASU_REF_INPUT: ${{ inputs.bakasu_ref }}
         run: |
           CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
           export PATH="${CLANG_ROOT}:$PATH"
@@ -279,6 +292,74 @@ jobs:
 
           cd ${SOC}
 
+          # ---- BakaSU / ReSukiSU (the same project) ----------------------------
+          # ReSukiSU was renamed to BakaSU on 5 Oct 2026 and the old repo URL now
+          # redirects to Baka-SU/BakaSU, so both options below share this helper.
+          #
+          # Why this is no longer a bare `setup.sh | bash`: since 10 Oct 2026
+          # (BakaSU commit 48fa4bb7, "kernel: suspend susfs build") main carries an
+          # unconditional $(error Please wait susfs update.) in
+          # kernel/tools/susfs_compat.mk, so EVERY susfs=true build on main aborts
+          # in drivers/kernelsu after ~15 min of compiling, whatever is done on our
+          # side. It is deliberate: susfs4ksu hasn't synced the newer selinux_hide
+          # code yet and the combination gets the device detected (main also adds
+          # new requirements on the kernel tree, see
+          # kernel/tools/static_export_check.mk). So the stop is NOT patched out
+          # here; instead:
+          #   bakasu_ref empty -> track main, but while main is blocked fall back to
+          #                       $BAKASU_KNOWN_GOOD with a warning (it returns to
+          #                       main by itself once BakaSU lifts the stop)
+          #   bakasu_ref set   -> build exactly that tag/branch/commit and fail
+          #                       within seconds if it is blocked
+          bakasu_susfs_blocked() {
+            # Evaluate BakaSU's own susfs gate the way Kbuild does (kernel/Kbuild
+            # includes it when CONFIG_KSU_SUSFS=y). Returns 0 (= blocked) if it
+            # hard-stops, after printing BakaSU's own message; 1 if it passes or
+            # the ref predates the gate.
+            local gate="${PWD}/KernelSU/kernel/tools/susfs_compat.mk" probe rc=0
+            [[ -f "$gate" ]] || return 1
+            probe="$(mktemp -d)"
+            printf 'srctree := %s\nREPO_NAME := BakaSU\ninclude %s\nprobe:\n\t@:\n' "$PWD" "$gate" > "${probe}/probe.mk"
+            make -s -f "${probe}/probe.mk" probe > "${probe}/out.txt" 2>&1 || rc=$?
+            [[ $rc -eq 0 ]] || sed '/^grep: /d; s/^/    | /' "${probe}/out.txt"
+            rm -rf "$probe"
+            [[ $rc -ne 0 ]]
+          }
+
+          setup_bakasu() {
+            local req="${BAKASU_REF_INPUT:-}" want got exp
+            want="${req:-main}"
+
+            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s "${want}"
+
+            # setup.sh swallows a failed `git checkout <ref>` ("Checkout default
+            # branch") and carries on with main, so a mistyped bakasu_ref would
+            # quietly build main. Confirm we are really on what was asked for.
+            got=$(git -C KernelSU rev-parse HEAD)
+            exp=$(git -C KernelSU rev-parse --verify --quiet "${want}^{commit}" || true)
+            if [[ -z "$exp" || "$got" != "$exp" ]]; then
+              echo "::error::bakasu_ref '${want}' could not be checked out in KernelSU/ (HEAD is ${got:0:8}). Use a tag, branch or commit SHA that exists on Baka-SU/BakaSU."
+              exit 1
+            fi
+
+            if [[ "${{ inputs.susfs }}" == true ]] && bakasu_susfs_blocked; then
+              if [[ -n "$req" ]]; then
+                echo "::error::BakaSU ${got:0:8} (bakasu_ref='${req}') hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above). Pick an older ref (e.g. ${BAKASU_KNOWN_GOOD:0:8}), leave bakasu_ref empty for the automatic fallback, or untick susfs."
+                exit 1
+              fi
+              echo "::warning::BakaSU main (${got:0:8}) hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above) - building the last known-good commit ${BAKASU_KNOWN_GOOD:0:8} instead. With bakasu_ref left empty this returns to main by itself once BakaSU lifts the stop."
+              git -C KernelSU checkout -q "${BAKASU_KNOWN_GOOD}"
+              if bakasu_susfs_blocked; then
+                echo "::error::The fallback commit ${BAKASU_KNOWN_GOOD:0:8} is blocked too - BAKASU_KNOWN_GOOD in this workflow's job env needs updating."
+                exit 1
+              fi
+            fi
+
+            BAKASU_COMMIT=$(git -C KernelSU rev-parse --short=8 HEAD)
+            echo "BAKASU_COMMIT=${BAKASU_COMMIT}" >> "$GITHUB_ENV"
+            echo "==> BakaSU: building commit ${BAKASU_COMMIT}"
+          }
+
           case "${{ inputs.ksu_type }}" in
 
             "None")
@@ -300,12 +381,8 @@ jobs:
               fi
               ;;
 
-            "ReSukiSU")
-              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-              ;;
-
-            "BakaSU")
-              curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
+            "ReSukiSU"|"BakaSU")
+              setup_bakasu
               ;;
 
             "SukiSUUltra")
@@ -596,6 +673,10 @@ jobs:
           cp out/defconfig "${GITHUB_WORKSPACE}/resolved_defconfig.txt"
 
           echo "--- Cek symbol kunci ingres / tuning gaming tetap ke-resolve ---"
+          # Read from out/.config, not out/defconfig: savedefconfig drops every
+          # symbol that sits at its Kconfig default, and CONFIG_BBG / CONFIG_NOMOUNT /
+          # CONFIG_REKERNEL are all "default y" - they used to be reported as missing
+          # while being enabled and compiled in.
           for cfg in \
             CONFIG_ARCH_QCOM \
             CONFIG_ARCH_WAIPIO \
@@ -610,7 +691,7 @@ jobs:
             CONFIG_REKERNEL \
             CONFIG_NOMOUNT \
           ; do
-            hit=$(grep "^${cfg}=" out/defconfig || true)
+            hit=$(grep "^${cfg}=" out/.config || true)
             if [[ -n "$hit" ]]; then
               echo "✅ ${hit}"
             else
@@ -719,6 +800,12 @@ jobs:
           cd ${GITHUB_WORKSPACE}
           ZIP_FILE=$(ls *.zip)
 
+          # BAKASU_COMMIT is only set (via GITHUB_ENV) for the BakaSU / ReSukiSU options.
+          ksu_label="${{ inputs.ksu_type }}"
+          if [[ -n "${BAKASU_COMMIT:-}" ]]; then
+            ksu_label="${ksu_label}@${BAKASU_COMMIT}"
+          fi
+
           ASSETS=("${ZIP_FILE}")
           if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
             ASSETS+=("rekernel-ebpf-out/rekernel.bpf.o" "rekernel-ebpf-out/rekerneld_aarch64")
@@ -774,7 +861,7 @@ jobs:
           | 🛠️ Build Scope | ZIP |
           | 📦 Source | ${{ inputs.kernel_source }} |
           | ⚔️ Kernel branch | ${{ inputs.kernel_branch }} |
-          | 💻 KSU Manager type | ${{ inputs.ksu_type }} |
+          | 💻 KSU Manager type | ${ksu_label} |
           | 🔧 SuSFS Version | ${susfs_checkbox} |
           | ⚙️ BBG Patch | ${bbg_checkbox} |
           | ⚙️ Re-Kernel (Netlink) | ${rekernel_netlink_checkbox} |
