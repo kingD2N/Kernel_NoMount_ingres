@@ -119,7 +119,7 @@ jobs:
         # Last Baka-SU/BakaSU commit (5 Oct 2026, just before the 8 Oct selinux_hide
         # changes) that builds with susfs4ksu's gki-android12-5.10 patch. Only used as
         # the automatic fallback while BakaSU main is blocked - see setup_bakasu in
-        # the "Compile Kernel" step. Bump it once a newer commit is confirmed to work.
+        # the "Integrate KernelSU" step. Bump it once a newer commit is confirmed to work.
         BAKASU_KNOWN_GOOD: "9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
         # Public link of your Telegram group (shown as "JOIN" button in the push).
         TG_GROUP_URL: ""
@@ -247,49 +247,16 @@ jobs:
             ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-
             ${{ env.CCACHE_REAL_KEY }}-
 
-      - name: Compile Kernel
+      # NOTE on step sizes: GitHub rejects the WHOLE workflow file ("Exceeded max
+      # expression length 21000") when a single run: block is longer than 21,000
+      # characters - the run then shows up with the file path as its name and zero
+      # jobs, and the Run workflow button stops working. "Compile Kernel" used to be
+      # one ~18.5K block, so KernelSU and SuSFS integration got their own steps.
+      # Keep every run: block comfortably below ~18K when adding to this file.
+      - name: Integrate KernelSU
         env:
           BAKASU_REF_INPUT: ${{ inputs.bakasu_ref }}
         run: |
-          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
-          export PATH="${CLANG_ROOT}:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
-          export CC="${CLANG_ROOT}/clang"
-          export CXX="${CLANG_ROOT}/clang++"
-          export HOSTCC="${CLANG_ROOT}/clang"
-          export HOSTCXX="${CLANG_ROOT}/clang++"
-          export LD="${CLANG_ROOT}/ld.lld"
-          export AR="${CLANG_ROOT}/llvm-ar"
-          export NM="${CLANG_ROOT}/llvm-nm"
-          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
-          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
-          export STRIP="${CLANG_ROOT}/llvm-strip"
-          export KBUILD_BUILD_USER="KingD2N"
-          export KBUILD_BUILD_HOST="Ingres"
-
-
-          export CCACHE_COMPILERCHECK="none"
-          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
-          export CCACHE_NOHASHDIR="true"
-          export CCACHE_NOHARDLINK="true"
-          mkdir -p "${CCACHE_DIR}"
-          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "${CCACHE_DIR}/ccache.conf"
-          ccache -M "${CCACHE_MAXSIZE}"
-          ccache -o compression=true
-          echo "ccache status before build:"
-          ccache -s
-
-          if [[ -n "${{ inputs.custom_name }}" ]]; then
-            KERNEL_NAME="${{ inputs.custom_name }}"
-          else
-            KERNEL_NAME="${{ inputs.ksu_type }}"
-          fi
-
-          echo "KERNEL_NAME=${KERNEL_NAME}" >> $GITHUB_ENV
-
           cd ${SOC}
 
           # ---- BakaSU / ReSukiSU (the same project) ----------------------------
@@ -389,6 +356,10 @@ jobs:
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
               ;;
           esac
+
+      - name: Integrate SuSFS
+        run: |
+          cd ${SOC}
 
           if [[ "${{ inputs.susfs }}" == true ]]; then
             # Shallow clone when just tracking the branch tip (the common
@@ -570,6 +541,49 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> arch/arm64/configs/gki_defconfig
           fi
+
+      - name: Compile Kernel
+        run: |
+          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
+          export PATH="${CLANG_ROOT}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="${CLANG_ROOT}/clang"
+          export CXX="${CLANG_ROOT}/clang++"
+          export HOSTCC="${CLANG_ROOT}/clang"
+          export HOSTCXX="${CLANG_ROOT}/clang++"
+          export LD="${CLANG_ROOT}/ld.lld"
+          export AR="${CLANG_ROOT}/llvm-ar"
+          export NM="${CLANG_ROOT}/llvm-nm"
+          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
+          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
+          export STRIP="${CLANG_ROOT}/llvm-strip"
+          export KBUILD_BUILD_USER="KingD2N"
+          export KBUILD_BUILD_HOST="Ingres"
+
+
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_NOHARDLINK="true"
+          mkdir -p "${CCACHE_DIR}"
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "${CCACHE_DIR}/ccache.conf"
+          ccache -M "${CCACHE_MAXSIZE}"
+          ccache -o compression=true
+          echo "ccache status before build:"
+          ccache -s
+
+          if [[ -n "${{ inputs.custom_name }}" ]]; then
+            KERNEL_NAME="${{ inputs.custom_name }}"
+          else
+            KERNEL_NAME="${{ inputs.ksu_type }}"
+          fi
+
+          echo "KERNEL_NAME=${KERNEL_NAME}" >> $GITHUB_ENV
+
+          cd ${SOC}
 
           if [[ "${{ inputs.nomount }}" == true ]]; then
             echo "::group::NoMount integration"
