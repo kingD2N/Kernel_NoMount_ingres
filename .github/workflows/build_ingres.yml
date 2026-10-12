@@ -844,7 +844,12 @@ jobs:
           # (saved_boot_config, ...). The loader resolves them from kallsyms at load time, and the
           # module's imports_guard refuses to load if one stays unresolved. Without the flag, 5.10's
           # modpost turns every one of them into an ERROR and no .ko is written.
-          make O=out M="$W/src/kernel" KBUILD_MODPOST_WARN=1 -j"$(nproc)" modules 2>&1 | tee "$W/build.log"
+          # External modules are linked with scripts/module.lds, which only `make modules_prepare`
+          # writes - `make Image` never does ("No rule to make target 'scripts/module.lds'"). Same
+          # CC/HOSTCC as the kernel build, so kbuild sees identical commands and rebuilds nothing else.
+          KCC="ccache ${CLANG_ROOT}/clang"
+          make O=out CC="$KCC" HOSTCC="$KCC" -j"$(nproc)" modules_prepare
+          make O=out CC="$KCC" HOSTCC="$KCC" M="$W/src/kernel" KBUILD_MODPOST_WARN=1 -j"$(nproc)" modules 2>&1 | tee "$W/build.log"
 
           KO="$W/src/kernel/susfs_guard_lkm.ko"
           [[ -s "$KO" ]] || { echo "::error::susfs_guard_lkm.ko was not produced"; exit 1; }
