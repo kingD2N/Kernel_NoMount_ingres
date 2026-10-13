@@ -80,13 +80,19 @@ on:
         default: false
 
       susfs_lkm_source:
-        description: "upstream-zip = the original matsuzaka-yuki/susfs-lkm-module v0.2.0 ZIP (prebuilt inforcqb v2.3.0-r17-fix-51c2169 .ko), only taught to accept this kernel's release as android12-5.10. build-from-source = compile inforcqb/susfs4ksu-lkm (susfs_lkm_ref) against this kernel."
+        description: "upstream-build = run matsuzaka-yuki/susfs-lkm-module's tools/build.py (its pinned, SHA-checked prebuilt inforcqb .ko files) on every kernel build and teach the ZIP this kernel's release (android12-5.10 KMI). build-from-source = compile inforcqb/susfs4ksu-lkm (susfs_lkm_ref) against this kernel."
         required: true
         type: choice
-        default: upstream-zip
+        default: upstream-build
         options:
-          - upstream-zip
+          - upstream-build
           - build-from-source
+
+      susfs_lkm_wrapper_ref:
+        description: "upstream-build only: branch, tag or commit of matsuzaka-yuki/susfs-lkm-module whose tools/build.py is run. main = follow upstream (its build.py pins and SHA-checks the inforcqb release it packages); v0.2.0 = the first multi-KMI release."
+        required: false
+        type: string
+        default: "main"
 
       susfs_lkm_ref:
         description: "build-from-source only: tag, branch or commit of inforcqb/susfs4ksu-lkm to compile. Upstream main moves many times a day; pin a release tag."
@@ -813,19 +819,17 @@ jobs:
           cp out/rekerneld_aarch64 "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
 
       # SuSFS as a loadable module instead of a kernel patch. Two sources (input susfs_lkm_source):
-      #   upstream-zip (default): the original KernelSU module ZIP from matsuzaka-yuki/susfs-lkm-module
-      #     v0.2.0 (SHA-256 pinned), i.e. inforcqb's prebuilt v2.3.0-r17-fix-51c2169 .ko files as
-      #     released. Only kmi.sh gets one extra line mapping THIS kernel's exact release to
-      #     android12-5.10 - its selector only knows 5.10.*-android12-* names, this kernel is that
-      #     KMI under the name 5.10.x-gki-... (susfs_insmod resolves the module's imports from
-      #     kallsyms, and with modversions the kernel compares vermagic without the release part).
+      #   upstream-build (default): matsuzaka-yuki/susfs-lkm-module built with its own tools/build.py
+      #     (inforcqb's pinned prebuilt .ko files, SHA-256 checked) on every kernel build, then taught
+      #     to accept THIS kernel's release as android12-5.10.
       #   build-from-source: inforcqb/susfs4ksu-lkm (susfs_lkm_ref) compiled against this kernel's
       #     out/ tree, packaged with the same wrapper scripts.
-      # Both get the boot-loop guard below.
+      # Both get the boot-loop guard below, and the ZIP is attached to the same release as the kernel.
       - name: Build SuSFS LKM
         if: ${{ inputs.susfs_lkm }}
         env:
           SUSFS_LKM_SOURCE: ${{ inputs.susfs_lkm_source }}
+          SUSFS_LKM_WRAPPER_REF: ${{ inputs.susfs_lkm_wrapper_ref }}
           SUSFS_LKM_REF: ${{ inputs.susfs_lkm_ref }}
           KSU_TYPE: ${{ inputs.ksu_type }}
         run: |
@@ -842,21 +846,65 @@ jobs:
           REL=$(cat out/include/config/kernel.release)
           case "$REL" in *"'"*) echo "::error::kernel release contains a quote: ${REL}"; exit 1 ;; esac
 
-          if [[ "${SUSFS_LKM_SOURCE:-upstream-zip}" == upstream-zip ]]; then
-            UP_URL=https://github.com/matsuzaka-yuki/susfs-lkm-module/releases/download/v0.2.0/susfs-lkm-module-0.2.0-arm64-multi-kmi.zip
-            UP_SHA=c36eb9997f282698b84b85ce95c48dc971f2aa69c2b87cc163ace51efdfb9df2
-            curl -fsSL -o "$W/upstream.zip" "$UP_URL"
-            echo "${UP_SHA}  $W/upstream.zip" | sha256sum -c -
-            unzip -q "$W/upstream.zip" -d "$Z"
+          if [[ "${SUSFS_LKM_SOURCE:-upstream-build}" == upstream-build ]]; then
+            # matsuzaka-yuki/susfs-lkm-module's own build: its host tests, then tools/build.py, which
+            # downloads inforcqb's pinned release .ko files + susfs_insmod (SHA-256 checked), compiles
+            # susfs_probe with the NDK and writes dist/*.zip. Afterwards only two things change: kmi.sh
+            # gets one line mapping THIS kernel's exact release to android12-5.10 (its selector only
+            # knows 5.10.*-android12-* names; this kernel is that KMI under another name - susfs_insmod
+            # resolves the module's imports from kallsyms, and with modversions the kernel compares
+            # vermagic without the release part), and the boot-loop guard below.
+            PKG_REF="${SUSFS_LKM_WRAPPER_REF:-main}"
+            git clone -q https://github.com/matsuzaka-yuki/susfs-lkm-module "$W/pkg"
+            git -C "$W/pkg" checkout -q "$PKG_REF" || { echo "::error::susfs_lkm_wrapper_ref '${PKG_REF}' does not exist on matsuzaka-yuki/susfs-lkm-module"; exit 1; }
+            # NDK r27d: reuse the one the Re-Kernel eBPF step unpacked, else fetch it.
+            NDK="${GITHUB_WORKSPACE}/rekernel-ebpf-build/android-ndk-r27d"
+            if [[ ! -d "$NDK/toolchains/llvm" ]]; then
+              NDK="${GITHUB_WORKSPACE}/android-ndk-r27d"
+              if [[ ! -d "$NDK/toolchains/llvm" ]]; then
+                wget -q -O "$W/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+                unzip -q "$W/ndk.zip" -d "${GITHUB_WORKSPACE}" && rm -f "$W/ndk.zip"
+              fi
+            fi
+            # Pre-fetch every file build.py would download, with retries (build.py's urllib has none)
+            # and the source tarball with the job token (api.github.com allows 60 unauthenticated
+            # requests/hour per IP, shared on hosted runners). The list is read from build.py's own
+            # TAG/COMMIT/ASSETS constants (parsed, not executed); build.py keeps existing files and
+            # still checks every SHA-256. If the format ever changes, build.py just fetches itself.
+            mkdir -p "$W/pkg/build"
+            python3 - "$W/pkg/tools/build.py" > "$W/fetch.lst" <<'PY' || { echo "::warning::could not read build.py's asset list - letting build.py download by itself"; : > "$W/fetch.lst"; }
+          import ast, sys
+          v = {}
+          for n in ast.parse(open(sys.argv[1]).read()).body:
+              if isinstance(n, ast.Assign) and len(n.targets) == 1 and getattr(n.targets[0], "id", "") in ("TAG", "COMMIT", "ASSETS"):
+                  v[n.targets[0].id] = ast.literal_eval(n.value)
+          for name in v["ASSETS"]:
+              print(f"https://github.com/inforcqb/susfs4ksu-lkm/releases/download/{v['TAG']}/{name} {name}")
+          print(f"https://api.github.com/repos/inforcqb/susfs4ksu-lkm/tarball/{v['COMMIT']} upstream-source.tar.gz")
+          PY
+            while read -r url name; do
+              auth=()
+              [[ "$url" == https://api.github.com/* ]] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
+              curl -fsSL --retry 3 --retry-delay 5 "${auth[@]}" -o "$W/pkg/build/${name}" "$url" || rm -f "$W/pkg/build/${name}"
+            done < "$W/fetch.lst"
+            ( cd "$W/pkg"
+              python3 -m unittest discover -s tests -v
+              sh -n module/kmi.sh module/customize.sh module/post-fs-data.sh
+              ANDROID_NDK_HOME="$NDK" python3 tools/build.py )
+            PKG_ZIP=$(ls "$W"/pkg/dist/*.zip | head -1)
+            unzip -q "$PKG_ZIP" -d "$Z"
+            PKG_VER=$(sed -n 's/^version=//p' "$Z/module.prop")
+            LKM_TAG=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tag"])' "$Z/provenance.json")
             # The wrapper's own post-fs-data.sh becomes load.sh, called by the guard below.
             mv "$Z/post-fs-data.sh" "$Z/load.sh"
             grep -q '^  case "\$1" in$' "$Z/kmi.sh" || { echo "::error::upstream kmi.sh layout changed - cannot add this kernel"; exit 1; }
             awk -v q="'" -v rel="$REL" '{ print } /^  case "\$1" in$/ { printf "    %s%s%s) echo android12-5.10 ;;  # added by build_ingres.yml: this kernel (android12-5.10 KMI)\n", q, rel, q }' \
               "$Z/kmi.sh" > "$W/kmi.sh" && mv "$W/kmi.sh" "$Z/kmi.sh"
             [[ "$(. "$Z/kmi.sh"; select_kmi "$REL")" == android12-5.10 ]] || { echo "::error::patched kmi.sh does not select android12-5.10 for ${REL}"; exit 1; }
+            [[ -s "$Z/lib/susfs_guard_lkm-android12-5.10.ko" ]] || { echo "::error::the wrapper ZIP has no android12-5.10 .ko"; exit 1; }
             sed -i "s/^name=.*/& (${KERNEL_NAME})/; s/^version=.*/&-ingres/" "$Z/module.prop"
-            LKM_INFO="matsuzaka-yuki/susfs-lkm-module v0.2.0 = prebuilt inforcqb v2.3.0-r17-fix-51c2169, android12-5.10"
-            ZIP_BASE="SuSFS-LKM_upstream-v0.2.0"
+            LKM_INFO="matsuzaka-yuki/susfs-lkm-module ${PKG_VER}@$(git -C "$W/pkg" rev-parse --short=8 HEAD) via tools/build.py = prebuilt inforcqb ${LKM_TAG}, android12-5.10"
+            ZIP_BASE="SuSFS-LKM_module-${PKG_VER}_${LKM_TAG}"
           else
             REF="${SUSFS_LKM_REF:-v2.3.0-r18.1}"
             git clone -q https://github.com/inforcqb/susfs4ksu-lkm "$W/src"
