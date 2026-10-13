@@ -770,6 +770,48 @@ jobs:
           cp out/rekernel.bpf.o "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
           cp out/rekerneld_aarch64 "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
 
+      # BakaSU / ReSukiSU: attach the newest manager APK - the latest successful build-manager run on
+      # Baka-SU/BakaSU main, via nightly.link (the link BakaSU's own README uses) - so every kernel
+      # release ships an up-to-date manager. The kernel itself may sit on BAKASU_KNOWN_GOOD while main
+      # blocks susfs builds, so the APK is only attached if its MINIMAL_SUPPORTED_KERNEL (Natives.kt)
+      # still covers this kernel's version code. Never fails the build: problems are warnings.
+      - name: Fetch BakaSU manager
+        if: ${{ inputs.ksu_type == 'BakaSU' || inputs.ksu_type == 'ReSukiSU' }}
+        run: |
+          set -o pipefail
+          K="${GITHUB_WORKSPACE}/${SOC}/KernelSU"
+          D="${GITHUB_WORKSPACE}/bakasu-manager"
+          rm -rf "$D" && mkdir -p "$D/out"
+          URL=https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/main/Manager-release.zip
+          if ! curl -fsSL --retry 3 --retry-delay 5 -o "$D/m.zip" "$URL" || ! unzip -q -o "$D/m.zip" -d "$D/x"; then
+            echo "::warning::could not fetch the BakaSU manager from ${URL} - the release goes out without it"
+            exit 0
+          fi
+          APK=$(find "$D/x" -name '*.apk' | sort | head -1)
+          [[ -n "$APK" ]] || { echo "::warning::Manager-release.zip contains no APK - the release goes out without it"; exit 0; }
+          # BakaSU_<tag>_<versionCode>-release.apk (archivesName in manager/app/build.gradle.kts)
+          MGR_CODE=$(basename "$APK" | sed -n 's/.*_\([0-9]\{5,\}\)\(-[A-Za-z]*\)\{0,1\}\.apk$/\1/p')
+
+          # Kernel version code exactly as kernel/Kbuild computes it: <base> + commit count + <offset>.
+          KER_CODE=""
+          read -r V_BASE V_OFF < <(sed -n 's/^KSU_VERSION := $(shell expr \([0-9]*\) + $(KSU_LOCAL_VERSION) + \([0-9]*\))$/\1 \2/p' "$K/kernel/Kbuild") || true
+          if [[ -n "${V_BASE:-}" && -n "${V_OFF:-}" ]]; then
+            KER_CODE=$(( V_BASE + $(git -C "$K" rev-list --count HEAD) + V_OFF ))
+          fi
+          MIN=$(git -C "$K" grep -h 'const val MINIMAL_SUPPORTED_KERNEL' origin/main -- manager 2>/dev/null | grep -o '[0-9]\+' | head -1 || true)
+          echo "==> BakaSU manager ${MGR_CODE:-?} (needs kernel >= ${MIN:-?}); this kernel: ${KER_CODE:-?} (BakaSU ${BAKASU_COMMIT:-?})"
+
+          if [[ -n "$KER_CODE" && -n "$MIN" ]] && (( KER_CODE < MIN )); then
+            echo "::warning::the newest BakaSU manager needs kernel version >= ${MIN}, this kernel is ${KER_CODE} - not attaching it. Use the manager from the BakaSU build of commit ${BAKASU_COMMIT:-?}."
+            exit 0
+          fi
+          if [[ -z "$KER_CODE" || -z "$MIN" ]]; then
+            echo "::warning::could not read the kernel version code or the manager's minimum - attaching the manager without the compatibility check"
+          fi
+          cp "$APK" "$D/out/"
+          echo "BAKASU_MANAGER_APK=bakasu-manager/out/$(basename "$APK")" >> "$GITHUB_ENV"
+          echo "BAKASU_MANAGER_INFO=manager ${MGR_CODE:-?} (latest Baka-SU/BakaSU main build), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
+
       - name: Make AnyKernel3
         run: |
           ZIP_NAME="${KERNEL_NAME}_${{ inputs.ksu_type }}"
@@ -806,6 +848,12 @@ jobs:
           fi
 
           ASSETS=("${ZIP_FILE}")
+          if [[ -n "${BAKASU_MANAGER_APK:-}" ]]; then
+            ASSETS+=("${BAKASU_MANAGER_APK}")
+            manager_checkbox="Attached: ${BAKASU_MANAGER_APK##*/} - ${BAKASU_MANAGER_INFO}"
+          else
+            manager_checkbox="Not attached"
+          fi
           if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
             ASSETS+=("rekernel-ebpf-out/rekernel.bpf.o" "rekernel-ebpf-out/rekerneld_aarch64")
           fi
@@ -861,6 +909,7 @@ jobs:
           | 📦 Source | ${{ inputs.kernel_source }} |
           | ⚔️ Kernel branch | ${{ inputs.kernel_branch }} |
           | 💻 KSU Manager type | ${ksu_label} |
+          | 📲 Manager APK | ${manager_checkbox} |
           | 🔧 SuSFS Version | ${susfs_checkbox} |
           | ⚙️ BBG Patch | ${bbg_checkbox} |
           | ⚙️ Re-Kernel (Netlink) | ${rekernel_netlink_checkbox} |
