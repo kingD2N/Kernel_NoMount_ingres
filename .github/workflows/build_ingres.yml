@@ -962,7 +962,7 @@ jobs:
           # SUSFS_LKM_ZIP / SUSFS_LKM_INFO come from the "Build SuSFS LKM" step via GITHUB_ENV.
           if [[ -n "${SUSFS_LKM_ZIP:-}" ]]; then
             ASSETS+=("${SUSFS_LKM_ZIP}")
-            susfs_lkm_checkbox="Supported (inforcqb/susfs4ksu-lkm ${SUSFS_LKM_INFO}) - flash the SuSFS-LKM zip in KernelSU, then reboot"
+            susfs_lkm_checkbox="Supported (inforcqb/susfs4ksu-lkm ${SUSFS_LKM_INFO}) - install ${SUSFS_LKM_ZIP##*/} from THIS release in KernelSU, then reboot. Not the prebuilt ZIP from matsuzaka-yuki/susfs-lkm-module: it only accepts stock 5.10.*-android12-* kernels and refuses this one (Unsupported kernel KMI)"
           else
             susfs_lkm_checkbox="Unsupported"
           fi
