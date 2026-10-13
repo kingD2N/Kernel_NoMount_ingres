@@ -854,8 +854,12 @@ jobs:
           KO="$W/src/kernel/susfs_guard_lkm.ko"
           [[ -s "$KO" ]] || { echo "::error::susfs_guard_lkm.ko was not produced"; exit 1; }
           llvm-strip --strip-debug "$KO"   # keeps .symtab - susfs_insmod rewrites its undefined entries
-          VERMAGIC=$(strings -a "$KO" | sed -n 's/^vermagic=\([^ ]*\) .*/\1/p' | head -1)
-          if [[ "$VERMAGIC" != "$REL" ]]; then
+          # Read vermagic byte-exact: .modinfo entries are NUL-separated. `strings` only keeps ASCII,
+          # so with a release like 5.10.271-gki-MIX™-KERNEL-... it cut the value at the ™ and the
+          # check failed with vermagic ''. vermagic = "<release> SMP preempt mod_unload ...".
+          REL=$(cat out/include/config/kernel.release)   # re-read after modules_prepare
+          VERMAGIC=$(LC_ALL=C tr '\0' '\n' < "$KO" | LC_ALL=C sed -n 's/^vermagic=//p' | head -1)
+          if [[ "$VERMAGIC" != "$REL "* ]]; then
             echo "::error::susfs_guard_lkm.ko vermagic '${VERMAGIC}' does not match the kernel release '${REL}'"
             exit 1
           fi
