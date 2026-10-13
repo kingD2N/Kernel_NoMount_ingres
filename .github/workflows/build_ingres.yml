@@ -74,13 +74,22 @@ on:
         default: ""
 
       susfs_lkm:
-        description: "Build SuSFS as a loadable module instead (inforcqb/susfs4ksu-lkm, compiled against THIS kernel) and attach a KernelSU module ZIP that loads it at boot (loader from matsuzaka-yuki/susfs-lkm-module). Untick 'susfs' when using this - the two are mutually exclusive. No susfs kernel patch means BakaSU/ReSukiSU can track main again."
+        description: "Attach a KernelSU module ZIP that loads SuSFS as a loadable module (LKM) at boot - see susfs_lkm_source. Untick 'susfs' when using this: the two are mutually exclusive. No susfs kernel patch means BakaSU/ReSukiSU can track main again. The ZIP has a boot-loop guard: a boot that never completes disables the module and keeps its kernel log in crash/."
         required: true
         type: boolean
         default: false
 
+      susfs_lkm_source:
+        description: "upstream-zip = the original matsuzaka-yuki/susfs-lkm-module v0.2.0 ZIP (prebuilt inforcqb v2.3.0-r17-fix-51c2169 .ko), only taught to accept this kernel's release as android12-5.10. build-from-source = compile inforcqb/susfs4ksu-lkm (susfs_lkm_ref) against this kernel."
+        required: true
+        type: choice
+        default: upstream-zip
+        options:
+          - upstream-zip
+          - build-from-source
+
       susfs_lkm_ref:
-        description: "Tag, branch or commit of inforcqb/susfs4ksu-lkm to build (only with susfs_lkm). Default is the latest release tag at the time this was added; upstream main moves many times a day."
+        description: "build-from-source only: tag, branch or commit of inforcqb/susfs4ksu-lkm to compile. Upstream main moves many times a day; pin a release tag."
         required: false
         type: string
         default: "v2.3.0-r18.1"
@@ -803,73 +812,102 @@ jobs:
           cp out/rekernel.bpf.o "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
           cp out/rekerneld_aarch64 "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
 
-      # SuSFS as a loadable module instead of a kernel patch: inforcqb/susfs4ksu-lkm provides the .ko
-      # (and the susfs_insmod loader), matsuzaka-yuki/susfs-lkm-module the KernelSU module wrapper
-      # (susfs_probe + post-fs-data loader). The prebuilt .ko files of both projects can't be used on
-      # this kernel: their selector only accepts 5.10.*-android12-* releases (this one is
-      # 5.10.x-gki-...), and their vermagic / symbol CRCs belong to Google's GKI build. So the .ko is
-      # compiled here against THIS kernel's out/ tree, and the ZIP only accepts this exact release.
+      # SuSFS as a loadable module instead of a kernel patch. Two sources (input susfs_lkm_source):
+      #   upstream-zip (default): the original KernelSU module ZIP from matsuzaka-yuki/susfs-lkm-module
+      #     v0.2.0 (SHA-256 pinned), i.e. inforcqb's prebuilt v2.3.0-r17-fix-51c2169 .ko files as
+      #     released. Only kmi.sh gets one extra line mapping THIS kernel's exact release to
+      #     android12-5.10 - its selector only knows 5.10.*-android12-* names, this kernel is that
+      #     KMI under the name 5.10.x-gki-... (susfs_insmod resolves the module's imports from
+      #     kallsyms, and with modversions the kernel compares vermagic without the release part).
+      #   build-from-source: inforcqb/susfs4ksu-lkm (susfs_lkm_ref) compiled against this kernel's
+      #     out/ tree, packaged with the same wrapper scripts.
+      # Both get the boot-loop guard below.
       - name: Build SuSFS LKM
         if: ${{ inputs.susfs_lkm }}
         env:
+          SUSFS_LKM_SOURCE: ${{ inputs.susfs_lkm_source }}
           SUSFS_LKM_REF: ${{ inputs.susfs_lkm_ref }}
           KSU_TYPE: ${{ inputs.ksu_type }}
         run: |
           set -eo pipefail
           CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
           export PATH="${CLANG_ROOT}:$PATH" ARCH=arm64 LLVM=1 LLVM_IAS=1
-          REF="${SUSFS_LKM_REF:-v2.3.0-r18.1}"
           W="${GITHUB_WORKSPACE}/susfs-lkm"
-          rm -rf "$W" && mkdir -p "$W"
+          Z="$W/zip"
+          rm -rf "$W" && mkdir -p "$Z"
           if [[ "$KSU_TYPE" == None ]]; then
             echo "::warning::ksu_type is None - the SuSFS LKM module ZIP needs a KernelSU-compatible manager to install."
           fi
-
-          git clone -q https://github.com/inforcqb/susfs4ksu-lkm "$W/src"
-          git -C "$W/src" checkout -q "$REF" || { echo "::error::susfs_lkm_ref '${REF}' does not exist on inforcqb/susfs4ksu-lkm"; exit 1; }
-          LKM_COMMIT=$(git -C "$W/src" rev-parse --short=8 HEAD)
-          git clone -q --depth=1 https://github.com/matsuzaka-yuki/susfs-lkm-module "$W/pkg"
-          PKG_COMMIT=$(git -C "$W/pkg" rev-parse --short=8 HEAD)
-          echo "==> SuSFS LKM: inforcqb/susfs4ksu-lkm ${REF} (${LKM_COMMIT}), wrapper matsuzaka-yuki/susfs-lkm-module@${PKG_COMMIT}"
-
           cd "${GITHUB_WORKSPACE}/${SOC}"
           REL=$(cat out/include/config/kernel.release)
-          # An external module reads the CRCs of vmlinux's exports from out/Module.symvers, which only
-          # `make modules` writes; `make Image` leaves them in out/vmlinux.symvers (link-vmlinux.sh).
-          if [[ ! -s out/Module.symvers ]]; then
-            [[ -s out/vmlinux.symvers ]] || { echo "::error::out/vmlinux.symvers is missing - the LKM would get no symbol CRCs"; exit 1; }
-            cp out/vmlinux.symvers out/Module.symvers
-          fi
-          # KBUILD_MODPOST_WARN=1: the module deliberately uses kernel symbols that are NOT exported
-          # (saved_boot_config, ...). The loader resolves them from kallsyms at load time, and the
-          # module's imports_guard refuses to load if one stays unresolved. Without the flag, 5.10's
-          # modpost turns every one of them into an ERROR and no .ko is written.
-          # External modules are linked with scripts/module.lds, which only `make modules_prepare`
-          # writes - `make Image` never does ("No rule to make target 'scripts/module.lds'"). Same
-          # CC/HOSTCC as the kernel build, so kbuild sees identical commands and rebuilds nothing else.
-          KCC="ccache ${CLANG_ROOT}/clang"
-          make O=out CC="$KCC" HOSTCC="$KCC" -j"$(nproc)" modules_prepare
-          make O=out CC="$KCC" HOSTCC="$KCC" M="$W/src/kernel" KBUILD_MODPOST_WARN=1 -j"$(nproc)" modules 2>&1 | tee "$W/build.log"
+          case "$REL" in *"'"*) echo "::error::kernel release contains a quote: ${REL}"; exit 1 ;; esac
 
-          KO="$W/src/kernel/susfs_guard_lkm.ko"
-          [[ -s "$KO" ]] || { echo "::error::susfs_guard_lkm.ko was not produced"; exit 1; }
-          llvm-strip --strip-debug "$KO"   # keeps .symtab - susfs_insmod rewrites its undefined entries
-          # Read vermagic byte-exact: .modinfo entries are NUL-separated. `strings` only keeps ASCII,
-          # so with a release like 5.10.271-gki-MIX™-KERNEL-... it cut the value at the ™ and the
-          # check failed with vermagic ''. vermagic = "<release> SMP preempt mod_unload ...".
-          REL=$(cat out/include/config/kernel.release)   # re-read after modules_prepare
-          VERMAGIC=$(LC_ALL=C tr '\0' '\n' < "$KO" | LC_ALL=C sed -n 's/^vermagic=//p' | head -1)
-          if [[ "$VERMAGIC" != "$REL "* ]]; then
-            echo "::error::susfs_guard_lkm.ko vermagic '${VERMAGIC}' does not match the kernel release '${REL}'"
-            exit 1
-          fi
-          echo "==> .ko built for ${REL}; symbols left for the loader to resolve: $(grep -c 'undefined!' "$W/build.log" || true)"
+          if [[ "${SUSFS_LKM_SOURCE:-upstream-zip}" == upstream-zip ]]; then
+            UP_URL=https://github.com/matsuzaka-yuki/susfs-lkm-module/releases/download/v0.2.0/susfs-lkm-module-0.2.0-arm64-multi-kmi.zip
+            UP_SHA=c36eb9997f282698b84b85ce95c48dc971f2aa69c2b87cc163ace51efdfb9df2
+            curl -fsSL -o "$W/upstream.zip" "$UP_URL"
+            echo "${UP_SHA}  $W/upstream.zip" | sha256sum -c -
+            unzip -q "$W/upstream.zip" -d "$Z"
+            # The wrapper's own post-fs-data.sh becomes load.sh, called by the guard below.
+            mv "$Z/post-fs-data.sh" "$Z/load.sh"
+            grep -q '^  case "\$1" in$' "$Z/kmi.sh" || { echo "::error::upstream kmi.sh layout changed - cannot add this kernel"; exit 1; }
+            awk -v q="'" -v rel="$REL" '{ print } /^  case "\$1" in$/ { printf "    %s%s%s) echo android12-5.10 ;;  # added by build_ingres.yml: this kernel (android12-5.10 KMI)\n", q, rel, q }' \
+              "$Z/kmi.sh" > "$W/kmi.sh" && mv "$W/kmi.sh" "$Z/kmi.sh"
+            [[ "$(. "$Z/kmi.sh"; select_kmi "$REL")" == android12-5.10 ]] || { echo "::error::patched kmi.sh does not select android12-5.10 for ${REL}"; exit 1; }
+            sed -i "s/^name=.*/& (${KERNEL_NAME})/; s/^version=.*/&-ingres/" "$Z/module.prop"
+            LKM_INFO="matsuzaka-yuki/susfs-lkm-module v0.2.0 = prebuilt inforcqb v2.3.0-r17-fix-51c2169, android12-5.10"
+            ZIP_BASE="SuSFS-LKM_upstream-v0.2.0"
+          else
+            REF="${SUSFS_LKM_REF:-v2.3.0-r18.1}"
+            git clone -q https://github.com/inforcqb/susfs4ksu-lkm "$W/src"
+            git -C "$W/src" checkout -q "$REF" || { echo "::error::susfs_lkm_ref '${REF}' does not exist on inforcqb/susfs4ksu-lkm"; exit 1; }
+            LKM_COMMIT=$(git -C "$W/src" rev-parse --short=8 HEAD)
+            git clone -q --depth=1 https://github.com/matsuzaka-yuki/susfs-lkm-module "$W/pkg"
+            echo "==> SuSFS LKM: inforcqb/susfs4ksu-lkm ${REF} (${LKM_COMMIT}), wrapper matsuzaka-yuki/susfs-lkm-module@$(git -C "$W/pkg" rev-parse --short=8 HEAD)"
+            # External modules need the CRCs of vmlinux's exports in out/Module.symvers, which only
+            # `make modules` writes; `make Image` leaves them in out/vmlinux.symvers.
+            if [[ ! -s out/Module.symvers ]]; then
+              [[ -s out/vmlinux.symvers ]] || { echo "::error::out/vmlinux.symvers is missing - the LKM would get no symbol CRCs"; exit 1; }
+              cp out/vmlinux.symvers out/Module.symvers
+            fi
+            # modules_prepare writes scripts/module.lds (needed to link any external module; `make
+            # Image` never does). Same CC/HOSTCC as the kernel build, so nothing else is rebuilt.
+            # KBUILD_MODPOST_WARN=1: the module uses unexported symbols on purpose (resolved by the
+            # loader from kallsyms); without it 5.10's modpost errors out and writes no .ko.
+            KCC="ccache ${CLANG_ROOT}/clang"
+            make O=out CC="$KCC" HOSTCC="$KCC" -j"$(nproc)" modules_prepare
+            make O=out CC="$KCC" HOSTCC="$KCC" M="$W/src/kernel" KBUILD_MODPOST_WARN=1 -j"$(nproc)" modules 2>&1 | tee "$W/build.log"
+            KO="$W/src/kernel/susfs_guard_lkm.ko"
+            [[ -s "$KO" ]] || { echo "::error::susfs_guard_lkm.ko was not produced"; exit 1; }
+            llvm-strip --strip-debug "$KO"   # keeps .symtab - susfs_insmod rewrites its undefined entries
+            # Byte-exact (.modinfo is NUL-separated): `strings` drops the ™ in this release name.
+            REL=$(cat out/include/config/kernel.release)
+            VERMAGIC=$(LC_ALL=C tr '\0' '\n' < "$KO" | LC_ALL=C sed -n 's/^vermagic=//p' | head -1)
+            [[ "$VERMAGIC" == "$REL "* ]] || { echo "::error::susfs_guard_lkm.ko vermagic '${VERMAGIC}' does not match the kernel release '${REL}'"; exit 1; }
 
-          Z="$W/zip"
-          mkdir -p "$Z/bin" "$Z/lib" "$Z/source"
-          cp "$W/pkg/module/customize.sh" "$W/pkg/LICENSE" "$Z/"
-          # The wrapper's own post-fs-data.sh becomes load.sh, called by the guard below.
-          cp "$W/pkg/module/post-fs-data.sh" "$Z/load.sh"
+            mkdir -p "$Z/bin" "$Z/lib" "$Z/source"
+            cp "$W/pkg/module/customize.sh" "$W/pkg/LICENSE" "$Z/"
+            cp "$W/pkg/module/post-fs-data.sh" "$Z/load.sh"
+            cp "$KO" "$Z/lib/susfs_guard_lkm-ingres.ko"
+            # One .ko built for one exact kernel: only that release is accepted.
+            printf '%s\n' '# SPDX-License-Identifier: GPL-2.0-only' '# Generated by build_ingres.yml: lib/ holds a .ko built for ONE exact kernel release.' \
+              'select_kmi() {' "  [ \"\$1\" = '${REL}' ] && echo ingres || return 1" '}' > "$Z/kmi.sh"
+            printf '%s\n' 'id=susfs_lkm_loader' "name=SUSFS LKM Loader (${KERNEL_NAME})" "version=${REF}-${LKM_COMMIT}" \
+              "versionCode=$(date -u +%y%m%d%H)" "author=inforcqb (LKM), matsuzaka-yuki (loader), ${GITHUB_REPOSITORY_OWNER} CI" \
+              "description=SuSFS LKM ${REF} (${LKM_COMMIT}) compiled for kernel ${REL} only. Never use with built-in SuSFS. Manage rules with ksu_susfs/FolkSU. Reboot required." > "$Z/module.prop"
+            # Upstream's build commands: freestanding loader (clang, no libc); 28-line probe, static.
+            clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fno-builtin \
+                  -fuse-ld=lld -Wl,-e,_start -o "$Z/bin/susfs_insmod" "$W/src/tools/susfs_insmod.c"
+            aarch64-linux-gnu-gcc -O2 -Wall -Wextra -Werror -static -o "$Z/bin/susfs_probe" "$W/pkg/tools/susfs_probe.c"
+            # GPL: ship the exact sources of the binaries inside the ZIP.
+            git -C "$W/src" archive --format=tar.gz --prefix=susfs4ksu-lkm/ -o "$Z/source/susfs4ksu-lkm-${LKM_COMMIT}.tar.gz" HEAD
+            cp "$W/pkg/tools/susfs_probe.c" "$Z/source/"
+            printf 'susfs4ksu-lkm: https://github.com/inforcqb/susfs4ksu-lkm %s (%s)\nwrapper: https://github.com/matsuzaka-yuki/susfs-lkm-module %s\nkernel release: %s\n' \
+              "$REF" "$(git -C "$W/src" rev-parse HEAD)" "$(git -C "$W/pkg" rev-parse HEAD)" "$REL" > "$Z/provenance.txt"
+            LKM_INFO="${REF} (${LKM_COMMIT}), built for this kernel"
+            ZIP_BASE="SuSFS-LKM_${REF}_${LKM_COMMIT}"
+          fi
+
           # >>> boot-loop guard
           # A boot that loads the LKM and never reaches sys.boot_completed (kernel panic, or a hang
           # the user has to force-restart out of) disables the module on the NEXT boot and keeps
@@ -913,46 +951,14 @@ jobs:
           ui_print "  disables this module and keeps that boot's kernel log in crash/."
           GUARD
           # <<< boot-loop guard
-          cp "$KO" "$Z/lib/susfs_guard_lkm-ingres.ko"
-          case "$REL" in *"'"*) echo "::error::kernel release contains a quote: ${REL}"; exit 1 ;; esac
-          # The wrapper's own kmi.sh maps GKI releases to Google's prebuilt .ko files; this ZIP carries
-          # one .ko built for one exact kernel, so only that release is accepted.
-          cat > "$Z/kmi.sh" <<EOF
-          # SPDX-License-Identifier: GPL-2.0-only
-          # Generated by build_ingres.yml: the .ko in lib/ is built against ONE kernel build,
-          # so only that exact release is accepted (no KMI matching, no nearest-version fallback).
-          select_kmi() {
-            [ "\$1" = '${REL}' ] && echo ingres || return 1
-          }
-          EOF
-          cat > "$Z/module.prop" <<EOF
-          id=susfs_lkm_loader
-          name=SUSFS LKM Loader (${KERNEL_NAME})
-          version=${REF}-${LKM_COMMIT}
-          versionCode=$(date -u +%y%m%d%H)
-          author=inforcqb (LKM), matsuzaka-yuki (loader), ${GITHUB_REPOSITORY_OWNER} CI
-          description=SuSFS LKM ${REF} (${LKM_COMMIT}) compiled for kernel ${REL} only. Never use with built-in SuSFS. Manage rules with ksu_susfs/FolkSU. Reboot required.
-          EOF
-
-          # Same build commands as upstream: the loader is freestanding (clang, no libc); the probe is
-          # 28 lines of libc code, built static so it needs nothing from Android's bionic.
-          clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fno-builtin \
-                -fuse-ld=lld -Wl,-e,_start -o "$Z/bin/susfs_insmod" "$W/src/tools/susfs_insmod.c"
-          aarch64-linux-gnu-gcc -O2 -Wall -Wextra -Werror -static -o "$Z/bin/susfs_probe" "$W/pkg/tools/susfs_probe.c"
-
-          # GPL: ship the exact sources of the binaries inside the ZIP.
-          git -C "$W/src" archive --format=tar.gz --prefix=susfs4ksu-lkm/ -o "$Z/source/susfs4ksu-lkm-${LKM_COMMIT}.tar.gz" HEAD
-          cp "$W/pkg/tools/susfs_probe.c" "$Z/source/"
-          printf 'susfs4ksu-lkm: https://github.com/inforcqb/susfs4ksu-lkm %s (%s)\nwrapper: https://github.com/matsuzaka-yuki/susfs-lkm-module %s\nkernel release: %s\n' \
-            "$REF" "$(git -C "$W/src" rev-parse HEAD)" "$(git -C "$W/pkg" rev-parse HEAD)" "$REL" > "$Z/provenance.txt"
 
           # Kept out of the workspace root: the release step picks the AnyKernel3 ZIP with `ls *.zip`.
           mkdir -p "${GITHUB_WORKSPACE}/susfs-lkm-out"
-          ZIP="${GITHUB_WORKSPACE}/susfs-lkm-out/SuSFS-LKM_${REF}_${LKM_COMMIT}.zip"
+          ZIP="${GITHUB_WORKSPACE}/susfs-lkm-out/${ZIP_BASE}.zip"
           (cd "$Z" && zip -qr9 "$ZIP" .)
           unzip -l "$ZIP"
           echo "SUSFS_LKM_ZIP=susfs-lkm-out/$(basename "$ZIP")" >> "$GITHUB_ENV"
-          echo "SUSFS_LKM_INFO=${REF} (${LKM_COMMIT})" >> "$GITHUB_ENV"
+          echo "SUSFS_LKM_INFO=${LKM_INFO}" >> "$GITHUB_ENV"
 
       - name: Make AnyKernel3
         run: |
@@ -1007,7 +1013,7 @@ jobs:
           # SUSFS_LKM_ZIP / SUSFS_LKM_INFO come from the "Build SuSFS LKM" step via GITHUB_ENV.
           if [[ -n "${SUSFS_LKM_ZIP:-}" ]]; then
             ASSETS+=("${SUSFS_LKM_ZIP}")
-            susfs_lkm_checkbox="Supported (inforcqb/susfs4ksu-lkm ${SUSFS_LKM_INFO}) - install ${SUSFS_LKM_ZIP##*/} from THIS release in KernelSU, then reboot. Not the prebuilt ZIP from matsuzaka-yuki/susfs-lkm-module: it only accepts stock 5.10.*-android12-* kernels and refuses this one (Unsupported kernel KMI)"
+            susfs_lkm_checkbox="Supported (inforcqb/susfs4ksu-lkm ${SUSFS_LKM_INFO}) - install ${SUSFS_LKM_ZIP##*/} from THIS release in KernelSU, then reboot. Not the unmodified ZIP from matsuzaka-yuki's release page: its selector refuses this kernel (Unsupported kernel KMI)"
           else
             susfs_lkm_checkbox="Unsupported"
           fi
