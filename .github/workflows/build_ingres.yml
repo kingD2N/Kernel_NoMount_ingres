@@ -867,7 +867,52 @@ jobs:
 
           Z="$W/zip"
           mkdir -p "$Z/bin" "$Z/lib" "$Z/source"
-          cp "$W/pkg/module/customize.sh" "$W/pkg/module/post-fs-data.sh" "$W/pkg/LICENSE" "$Z/"
+          cp "$W/pkg/module/customize.sh" "$W/pkg/LICENSE" "$Z/"
+          # The wrapper's own post-fs-data.sh becomes load.sh, called by the guard below.
+          cp "$W/pkg/module/post-fs-data.sh" "$Z/load.sh"
+          # >>> boot-loop guard
+          # A boot that loads the LKM and never reaches sys.boot_completed (kernel panic, or a hang
+          # the user has to force-restart out of) disables the module on the NEXT boot and keeps
+          # that boot's kernel log (pstore) in crash/ - so one bad boot, not a boot loop.
+          cat > "$Z/post-fs-data.sh" <<'GUARD'
+          #!/system/bin/sh
+          # SPDX-License-Identifier: GPL-2.0-only
+          # Boot-loop guard (build_ingres.yml) around the wrapper's loader, load.sh.
+          MODDIR=${0%/*}
+          [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || exit 0
+          if [ -f "$MODDIR/boot_pending" ]; then
+            rm -f "$MODDIR/boot_pending"
+            touch "$MODDIR/disable"
+            C="$MODDIR/crash"
+            rm -rf "$C"; mkdir -p "$C"
+            cp /sys/fs/pstore/* "$C/" 2>/dev/null
+            [ -r /proc/last_kmsg ] && cat /proc/last_kmsg > "$C/last_kmsg" 2>/dev/null
+            [ -f "$MODDIR/load.log" ] && cp "$MODDIR/load.log" "$C/load.log.previous-boot"
+            echo "$(date): the previous boot loaded the SuSFS LKM but never completed - module disabled automatically, logs of that boot in crash/" >> "$MODDIR/guard.log"
+            exit 0
+          fi
+          echo 1 > "$MODDIR/boot_pending"
+          sync
+          sh "$MODDIR/load.sh"
+          GUARD
+          cat > "$Z/service.sh" <<'GUARD'
+          #!/system/bin/sh
+          # SPDX-License-Identifier: GPL-2.0-only
+          # Boot-loop guard (build_ingres.yml): the boot counts as good 30 s after boot_completed.
+          MODDIR=${0%/*}
+          [ -f "$MODDIR/boot_pending" ] || exit 0
+          until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 2; done
+          sleep 30
+          rm -f "$MODDIR/boot_pending"
+          dmesg 2>/dev/null | grep -iE 'susfs|kprobe|cfi' > "$MODDIR/dmesg_susfs.log"
+          GUARD
+          cat >> "$Z/customize.sh" <<'GUARD'
+          set_perm "$MODPATH/load.sh" 0 0 0755
+          set_perm "$MODPATH/service.sh" 0 0 0755
+          ui_print "- Boot-loop guard: if a boot with the LKM never completes, the next boot"
+          ui_print "  disables this module and keeps that boot's kernel log in crash/."
+          GUARD
+          # <<< boot-loop guard
           cp "$KO" "$Z/lib/susfs_guard_lkm-ingres.ko"
           case "$REL" in *"'"*) echo "::error::kernel release contains a quote: ${REL}"; exit 1 ;; esac
           # The wrapper's own kmi.sh maps GKI releases to Google's prebuilt .ko files; this ZIP carries
@@ -885,7 +930,7 @@ jobs:
           name=SUSFS LKM Loader (${KERNEL_NAME})
           version=${REF}-${LKM_COMMIT}
           versionCode=$(date -u +%y%m%d%H)
-          author=LKM by inforcqb; loader by matsuzaka-yuki; built by ${GITHUB_REPOSITORY_OWNER} CI
+          author=inforcqb (LKM), matsuzaka-yuki (loader), ${GITHUB_REPOSITORY_OWNER} CI
           description=SuSFS LKM ${REF} (${LKM_COMMIT}) compiled for kernel ${REL} only. Never use with built-in SuSFS. Manage rules with ksu_susfs/FolkSU. Reboot required.
           EOF
 
