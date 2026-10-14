@@ -64,7 +64,7 @@ Kernel adalah lapisan inti (core) sistem operasi Android yang menjadi jembatan k
 
 ---
 
-## 📱 Tentang Perangkat: POCO F4 GT (ingres)
+## 📱  Tentang Perangkat: POCO F4 GT (ingres)
 
 | Spesifikasi | Detail |
 |---|---|
