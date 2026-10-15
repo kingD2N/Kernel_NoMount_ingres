@@ -18,7 +18,7 @@
 [![Device](https://img.shields.io/badge/Device-POCO_F4_GT_%2F_Redmi_K50G-EF5350)](https://github.com/mohdakil2426/android_kernel_xiaomi_marble)
 [![ROM](https://img.shields.io/badge/ROM-AOSP_&_HyperOS-FF6900)](https://www.mi.com/global/hyperos/)
 
-## 📖 Apa Itu Kernel Custom?
+## 📖 Apa Itu Kernel Custom? 
 
 Kernel adalah lapisan inti (core) sistem operasi Android yang menjadi jembatan komunikasi antara hardware perangkat (CPU, GPU, RAM, sensor, modem, dll) dengan software di atasnya (Android framework dan aplikasi). Kernel Android merupakan turunan Linux kernel yang dimodifikasi oleh Google (AOSP) dan vendor SoC seperti Qualcomm.
 
