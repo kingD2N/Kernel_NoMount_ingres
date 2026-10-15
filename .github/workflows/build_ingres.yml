@@ -46,7 +46,7 @@ on:
           - SukiSUUltra
 
       bakasu_ref:
-        description: "Only used for ksu_type BakaSU / ReSukiSU (the same project - ReSukiSU was renamed to BakaSU). Tag, branch or commit SHA of Baka-SU/BakaSU to build. Leave empty (default) to track main: since 10 Oct 2026 main hard-stops every susfs build (kernel/tools/susfs_compat.mk, 'Please wait susfs update'), so while that is the case the build falls back to the last known-good commit (BAKASU_KNOWN_GOOD in the job env) and returns to main by itself once BakaSU lifts the stop. Set a ref to build exactly that one - it then fails within seconds, instead of after ~15 min of compiling, if the ref is blocked."
+        description: "Only for ksu_type BakaSU / ReSukiSU (the same project). Tag, branch or commit of Baka-SU/BakaSU. Leave empty (default) to pick automatically: main if it builds with susfs, else the dev branch with the susfs re-sync (BAKASU_DEV_BRANCH, sync-susfs), else the last known-good commit - and back to main by itself once BakaSU merges the re-sync. Set a ref to build exactly that one (fails within seconds if it blocks susfs)."
         required: false
         type: string
         default: ""
@@ -116,10 +116,13 @@ jobs:
         SOC: sm8450
         CCACHE_KEY: ccache-ecsv3-ingres-sm8450
         # Last Baka-SU/BakaSU commit (5 Oct 2026, just before the 8 Oct selinux_hide
-        # changes) that builds with susfs4ksu's gki-android12-5.10 patch. Only used as
-        # the automatic fallback while BakaSU main is blocked - see setup_bakasu in
+        # changes) that builds with susfs4ksu's gki-android12-5.10 patch. Last-resort
+        # fallback while main and BAKASU_DEV_BRANCH are blocked - see setup_bakasu in
         # the "Integrate KernelSU" step. Bump it once a newer commit is confirmed to work.
         BAKASU_KNOWN_GOOD: "9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
+        # BakaSU dev branch carrying the susfs re-sync (14 Oct 2026). Tried after main and
+        # before BAKASU_KNOWN_GOOD; skipped automatically once it is merged and deleted.
+        BAKASU_DEV_BRANCH: "sync-susfs"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -250,25 +253,33 @@ jobs:
         run: |
           cd ${SOC}
 
+          # run_setup <url> [args...]: download a setup.sh first, then run it. A bare
+          # `curl ... | bash` runs an EMPTY script when the download fails (these steps have no
+          # pipefail), so the feature went missing silently while the build carried on.
+          run_setup() {
+            local url=$1 f
+            shift
+            f=$(mktemp)
+            curl -fLSs --retry 3 --retry-delay 5 -o "$f" "$url" || { echo "::error::could not download ${url}"; exit 1; }
+            bash "$f" "$@"
+            rm -f "$f"
+          }
+
           # ---- BakaSU / ReSukiSU (the same project) ----------------------------
           # ReSukiSU was renamed to BakaSU on 5 Oct 2026 and the old repo URL now
           # redirects to Baka-SU/BakaSU, so both options below share this helper.
           #
-          # Why this is no longer a bare `setup.sh | bash`: since 10 Oct 2026
-          # (BakaSU commit 48fa4bb7, "kernel: suspend susfs build") main carries an
-          # unconditional $(error Please wait susfs update.) in
-          # kernel/tools/susfs_compat.mk, so EVERY susfs=true build on main aborts
-          # in drivers/kernelsu after ~15 min of compiling, whatever is done on our
-          # side. It is deliberate: susfs4ksu hasn't synced the newer selinux_hide
-          # code yet and the combination gets the device detected (main also adds
-          # new requirements on the kernel tree, see
-          # kernel/tools/static_export_check.mk). So the stop is NOT patched out
-          # here; instead:
-          #   bakasu_ref empty -> track main, but while main is blocked fall back to
-          #                       $BAKASU_KNOWN_GOOD with a warning (it returns to
-          #                       main by itself once BakaSU lifts the stop)
-          #   bakasu_ref set   -> build exactly that tag/branch/commit and fail
-          #                       within seconds if it is blocked
+          # Since 10 Oct 2026 BakaSU main hard-stops every susfs build ($(error Please
+          # wait susfs update.) in kernel/tools/susfs_compat.mk) until it is re-synced
+          # with susfs4ksu. That re-sync is developed on a dev branch first
+          # ($BAKASU_DEV_BRANCH: sync-susfs, 14 Oct, together with simonpunk's 12-15 Oct
+          # susfs4ksu updates). The stop is never patched out here; instead:
+          #   bakasu_ref empty -> the first of main, $BAKASU_DEV_BRANCH, $BAKASU_KNOWN_GOOD
+          #                       that does not stop susfs builds (susfs off: main). A dev
+          #                       branch that has been merged and deleted is skipped, so
+          #                       this returns to main by itself.
+          #   bakasu_ref set   -> exactly that tag/branch/commit; fails within seconds if
+          #                       it is blocked.
           bakasu_susfs_blocked() {
             # Evaluate BakaSU's own susfs gate the way Kbuild does (kernel/Kbuild
             # includes it when CONFIG_KSU_SUSFS=y). Returns 0 (= blocked) if it
@@ -284,38 +295,50 @@ jobs:
             [[ $rc -ne 0 ]]
           }
 
+          # Check out <ref> in KernelSU/ and confirm HEAD really is that ref (setup.sh
+          # swallows a failed checkout and carries on with main). Returns 1 if it is not there.
+          bakasu_checkout() {
+            local exp
+            git -C KernelSU checkout -q "$1" 2>/dev/null || return 1
+            exp=$(git -C KernelSU rev-parse --verify --quiet "$1^{commit}") || return 1
+            [[ "$(git -C KernelSU rev-parse HEAD)" == "$exp" ]]
+          }
+
           setup_bakasu() {
-            local req="${BAKASU_REF_INPUT:-}" want got exp
-            want="${req:-main}"
+            local req="${BAKASU_REF_INPUT:-}" cand used=""
+            run_setup "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" "${req:-main}"
 
-            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s "${want}"
-
-            # setup.sh swallows a failed `git checkout <ref>` ("Checkout default
-            # branch") and carries on with main, so a mistyped bakasu_ref would
-            # quietly build main. Confirm we are really on what was asked for.
-            got=$(git -C KernelSU rev-parse HEAD)
-            exp=$(git -C KernelSU rev-parse --verify --quiet "${want}^{commit}" || true)
-            if [[ -z "$exp" || "$got" != "$exp" ]]; then
-              echo "::error::bakasu_ref '${want}' could not be checked out in KernelSU/ (HEAD is ${got:0:8}). Use a tag, branch or commit SHA that exists on Baka-SU/BakaSU."
-              exit 1
-            fi
-
-            if [[ "${{ inputs.susfs }}" == true ]] && bakasu_susfs_blocked; then
-              if [[ -n "$req" ]]; then
-                echo "::error::BakaSU ${got:0:8} (bakasu_ref='${req}') hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above). Pick an older ref (e.g. ${BAKASU_KNOWN_GOOD:0:8}), leave bakasu_ref empty for the automatic fallback, or untick susfs."
+            if [[ -n "$req" ]]; then
+              bakasu_checkout "$req" || { echo "::error::bakasu_ref '${req}' could not be checked out - use a tag, branch or commit SHA that exists on Baka-SU/BakaSU."; exit 1; }
+              if [[ "${{ inputs.susfs }}" == true ]] && bakasu_susfs_blocked; then
+                echo "::error::BakaSU ${req} hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above). Leave bakasu_ref empty for the automatic choice, or untick susfs."
                 exit 1
               fi
-              echo "::warning::BakaSU main (${got:0:8}) hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above) - building the last known-good commit ${BAKASU_KNOWN_GOOD:0:8} instead. With bakasu_ref left empty this returns to main by itself once BakaSU lifts the stop."
-              git -C KernelSU checkout -q "${BAKASU_KNOWN_GOOD}"
-              if bakasu_susfs_blocked; then
-                echo "::error::The fallback commit ${BAKASU_KNOWN_GOOD:0:8} is blocked too - BAKASU_KNOWN_GOOD in this workflow's job env needs updating."
-                exit 1
-              fi
+              used="$req"
+            else
+              for cand in main "${BAKASU_DEV_BRANCH:-}" "${BAKASU_KNOWN_GOOD}"; do
+                [[ -n "$cand" ]] || continue
+                if ! bakasu_checkout "$cand"; then
+                  echo "==> BakaSU: ${cand} does not exist (any more) - skipping it"
+                  continue
+                fi
+                if [[ "${{ inputs.susfs }}" != true ]] || ! bakasu_susfs_blocked; then
+                  used="$cand"
+                  break
+                fi
+                echo "::warning::BakaSU ${cand} ($(git -C KernelSU rev-parse --short=8 HEAD)) hard-stops susfs builds (BakaSU's message is printed above) - trying the next candidate."
+              done
+              [[ -n "$used" ]] || { echo "::error::every BakaSU candidate (main, ${BAKASU_DEV_BRANCH:-no dev branch}, ${BAKASU_KNOWN_GOOD:0:8}) stops susfs builds - BAKASU_DEV_BRANCH / BAKASU_KNOWN_GOOD in the job env need updating."; exit 1; }
             fi
 
             BAKASU_COMMIT=$(git -C KernelSU rev-parse --short=8 HEAD)
+            # A branch name (main / the dev branch) lets the manager step fetch the manager built
+            # from the same branch; a tag or commit leaves it empty (manager from main).
+            BAKASU_BRANCH=""
+            git -C KernelSU show-ref --verify --quiet "refs/remotes/origin/${used}" && BAKASU_BRANCH="$used"
             echo "BAKASU_COMMIT=${BAKASU_COMMIT}" >> "$GITHUB_ENV"
-            echo "==> BakaSU: building commit ${BAKASU_COMMIT}"
+            echo "BAKASU_BRANCH=${BAKASU_BRANCH}" >> "$GITHUB_ENV"
+            echo "==> BakaSU: building ${used} (${BAKASU_COMMIT})"
           }
 
           case "${{ inputs.ksu_type }}" in
@@ -324,18 +347,18 @@ jobs:
               ;;
 
             "Official-KernelSU")
-              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+              run_setup "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" main
               ;;
 
             "KowSU")
-               curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" | bash -s master
+              run_setup "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" master
               ;;
 
             "KernelSU-Next")
               if [[ "${{ inputs.susfs }}" == true ]]; then
-                curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+                run_setup "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" dev-susfs
               else
-                curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+                run_setup "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" dev
               fi
               ;;
 
@@ -344,7 +367,7 @@ jobs:
               ;;
 
             "SukiSUUltra")
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+              run_setup "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" builtin
               ;;
           esac
 
@@ -575,6 +598,17 @@ jobs:
 
           cd ${SOC}
 
+          # run_setup <url> [args...]: download first, then run - see the same helper in
+          # "Integrate KernelSU" (a failed download must stop the build, not drop a feature).
+          run_setup() {
+            local url=$1 f
+            shift
+            f=$(mktemp)
+            curl -fLSs --retry 3 --retry-delay 5 -o "$f" "$url" || { echo "::error::could not download ${url}"; exit 1; }
+            bash "$f" "$@"
+            rm -f "$f"
+          }
+
           if [[ "${{ inputs.nomount }}" == true ]]; then
             echo "::group::NoMount integration"
             if [[ "${{ inputs.susfs }}" == true ]]; then
@@ -589,13 +623,13 @@ jobs:
             echo "NOMOUNT_COMMIT=${NOMOUNT_COMMIT}" >> $GITHUB_ENV
             echo "==> NoMount: using maxsteeel/nomount@master (${NOMOUNT_COMMIT})"
 
-            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" | bash -s master
+            run_setup "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" master
             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
             echo "::endgroup::"
           fi
 
           if [[ "${{ inputs.BBG }}" == true ]]; then
-            wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+            run_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh"
             echo "CONFIG_BBG=y" >> arch/arm64/configs/gki_defconfig
             sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           fi
@@ -770,11 +804,10 @@ jobs:
           cp out/rekernel.bpf.o "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
           cp out/rekerneld_aarch64 "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
 
-      # BakaSU / ReSukiSU: attach the newest manager APK - the latest successful build-manager run on
-      # Baka-SU/BakaSU main, via nightly.link (the link BakaSU's own README uses) - so every kernel
-      # release ships an up-to-date manager. The kernel itself may sit on BAKASU_KNOWN_GOOD while main
-      # blocks susfs builds, so the APK is only attached if its MINIMAL_SUPPORTED_KERNEL (Natives.kt)
-      # still covers this kernel's version code. Never fails the build: problems are warnings.
+      # BakaSU / ReSukiSU: attach the newest manager APK - the latest successful build-manager run of
+      # the branch the kernel was built from (main or BAKASU_DEV_BRANCH; else main), via nightly.link
+      # (the link BakaSU's own README uses). Attached only if its MINIMAL_SUPPORTED_KERNEL (Natives.kt)
+      # covers this kernel's version code. Never fails the build: problems are warnings.
       - name: Fetch BakaSU manager
         if: ${{ inputs.ksu_type == 'BakaSU' || inputs.ksu_type == 'ReSukiSU' }}
         run: |
@@ -782,11 +815,19 @@ jobs:
           K="${GITHUB_WORKSPACE}/${SOC}/KernelSU"
           D="${GITHUB_WORKSPACE}/bakasu-manager"
           rm -rf "$D" && mkdir -p "$D/out"
-          URL=https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/main/Manager-release.zip
-          if ! curl -fsSL --retry 3 --retry-delay 5 -o "$D/m.zip" "$URL" || ! unzip -q -o "$D/m.zip" -d "$D/x"; then
-            echo "::warning::could not fetch the BakaSU manager from ${URL} - the release goes out without it"
-            exit 0
-          fi
+          # Manager built from the same branch as the kernel (BAKASU_BRANCH from "Integrate KernelSU"),
+          # else main's.
+          MBRANCH=""
+          for b in ${BAKASU_BRANCH:-} main; do
+            URL="https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/${b}/Manager-release.zip"
+            if curl -fsSL --retry 3 --retry-delay 5 -o "$D/m.zip" "$URL" && unzip -q -o "$D/m.zip" -d "$D/x"; then
+              MBRANCH="$b"
+              break
+            fi
+            rm -rf "$D/m.zip" "$D/x"
+            echo "::warning::could not fetch the BakaSU manager from ${URL}"
+          done
+          [[ -n "$MBRANCH" ]] || { echo "::warning::no BakaSU manager could be fetched - the release goes out without it"; exit 0; }
           APK=$(find "$D/x" -name '*.apk' | sort | head -1)
           [[ -n "$APK" ]] || { echo "::warning::Manager-release.zip contains no APK - the release goes out without it"; exit 0; }
           # BakaSU_<tag>_<versionCode>-release.apk (archivesName in manager/app/build.gradle.kts)
@@ -798,7 +839,7 @@ jobs:
           if [[ -n "${V_BASE:-}" && -n "${V_OFF:-}" ]]; then
             KER_CODE=$(( V_BASE + $(git -C "$K" rev-list --count HEAD) + V_OFF ))
           fi
-          MIN=$(git -C "$K" grep -h 'const val MINIMAL_SUPPORTED_KERNEL' origin/main -- manager 2>/dev/null | grep -o '[0-9]\+' | head -1 || true)
+          MIN=$(git -C "$K" grep -h 'const val MINIMAL_SUPPORTED_KERNEL' "origin/${MBRANCH}" -- manager 2>/dev/null | grep -o '[0-9]\+' | head -1 || true)
           echo "==> BakaSU manager ${MGR_CODE:-?} (needs kernel >= ${MIN:-?}); this kernel: ${KER_CODE:-?} (BakaSU ${BAKASU_COMMIT:-?})"
 
           if [[ -n "$KER_CODE" && -n "$MIN" ]] && (( KER_CODE < MIN )); then
@@ -810,7 +851,7 @@ jobs:
           fi
           cp "$APK" "$D/out/"
           echo "BAKASU_MANAGER_APK=bakasu-manager/out/$(basename "$APK")" >> "$GITHUB_ENV"
-          echo "BAKASU_MANAGER_INFO=manager ${MGR_CODE:-?} (latest Baka-SU/BakaSU main build), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
+          echo "BAKASU_MANAGER_INFO=manager ${MGR_CODE:-?} (latest Baka-SU/BakaSU ${MBRANCH} build), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
 
       - name: Make AnyKernel3
         run: |
