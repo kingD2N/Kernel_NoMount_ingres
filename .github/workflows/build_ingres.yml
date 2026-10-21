@@ -1,23 +1,34 @@
-name: Compile Kernel Melt Rebase - POCO F4 GT (Ingres)
+name: Compile Kernel Melt / LineageOS - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Kernel source repo (git URL) - default is the Melt kernel for ingres. Paste another git URL to override."
-        required: true
-        type: string
-        default: "https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres"
-
-      kernel_branch:
-        description: "Branch on kernel_source above (independent from modules/devicetree branches below)"
+        description: "Kernel source to build: Melt = kingD2N/kernel_source_Melt_xiaomi_ingres, LineageOS = kingD2N/android_kernel_xiaomi_sm8450"
         required: true
         type: choice
-        default: "melt-MIX"
+        default: Melt
         options:
-           - LazyGoogle_ORI
-           - melt-rebase-4LazyGoogle
-           - melt-MIX
+          - Melt
+          - LineageOS
+
+      kernel_branch:
+        description: "Branch of the chosen kernel source. auto = melt-MIX for Melt, lineage-23.2 for LineageOS (the repo's default branch for kernel_source_url). A branch the chosen repo does not have stops the build at once, listing the ones it has."
+        required: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - melt-MIX
+          - melt-rebase-4LazyGoogle
+          - LazyGoogle_ORI
+          - lineage-23.2
+
+      kernel_source_url:
+        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty for Melt / LineageOS)"
+        required: false
+        type: string
+        default: ""
 
       modules_branch:
         description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch)"
@@ -60,6 +71,7 @@ on:
           - Melt-KERNEL
           - MIX™-KERNEL
           - LazyGoogle-KERNEL
+          - LineageOS-KERNEL
 
       susfs:
         description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
@@ -166,8 +178,35 @@ jobs:
           gcc-aarch64-linux-gnu
 
       - name: Clone Kernel Source
+        env:
+          KSRC_URL_INPUT: ${{ inputs.kernel_source_url }}
         run: |
-          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.kernel_branch }} ${{ inputs.kernel_source }} ${SOC}
+          # kernel_source -> repo + its default branch; KERNEL_SOURCE_TAG keeps each source's ccache
+          # apart (empty for Melt, so its existing cache keys stay valid).
+          case "${{ inputs.kernel_source }}" in
+            LineageOS) URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450;   DEF=lineage-23.2; TAG=-lineageos ;;
+            *)         URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX;     TAG= ;;
+          esac
+          if [[ -n "$KSRC_URL_INPUT" ]]; then
+            URL="$KSRC_URL_INPUT"; DEF=""; TAG=-custom
+          fi
+          BR="${{ inputs.kernel_branch }}"
+          if [[ "$BR" == auto ]]; then
+            BR="$DEF"
+            [[ -n "$BR" ]] || BR=$(git ls-remote --symref "$URL" HEAD | sed -n 's#^ref: refs/heads/\(.*\)[[:space:]]HEAD$#\1#p')
+          fi
+          if ! git ls-remote --exit-code --heads "$URL" "$BR" > /dev/null; then
+            echo "::error::branch '${BR}' does not exist in ${URL} - its branches: $(git ls-remote --heads "$URL" | sed 's#.*refs/heads/##' | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "==> Kernel source: ${URL} @ ${BR}"
+          {
+            echo "KERNEL_SOURCE_URL=${URL}"
+            echo "KERNEL_BRANCH=${BR}"
+            echo "KERNEL_SOURCE_TAG=${TAG}"
+          } >> "$GITHUB_ENV"
+
+          git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
           git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
           rm -rf ${SOC}/arch/arm64/boot/dts/vendor
@@ -218,9 +257,9 @@ jobs:
           echo "CCACHE_DIR=$HOME/.ccache_ingres" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
           if [[ "${{ inputs.droidspaces }}" == true ]]; then
-            CCACHE_REAL_KEY=${CCACHE_KEY}-Droidspaces
+            CCACHE_REAL_KEY=${CCACHE_KEY}-Droidspaces${KERNEL_SOURCE_TAG}
           else
-            CCACHE_REAL_KEY=${CCACHE_KEY}-none
+            CCACHE_REAL_KEY=${CCACHE_KEY}-none${KERNEL_SOURCE_TAG}
           fi
           echo "CCACHE_REAL_KEY=$CCACHE_REAL_KEY" >> $GITHUB_ENV
 
@@ -229,14 +268,14 @@ jobs:
         continue-on-error: true
         run: |
           echo "Deleting old repo ccache to force a fresh save..."
-          gh cache delete "${CCACHE_REAL_KEY}-${{ runner.os }}-${{ inputs.kernel_branch }}" -R ${{ github.repository }} || echo "No old ccache to delete"
+          gh cache delete "${CCACHE_REAL_KEY}-${{ runner.os }}-${KERNEL_BRANCH}" -R ${{ github.repository }} || echo "No old ccache to delete"
 
       - name: Restore ccache
         uses: actions/cache/restore@v6
         id: ccache-restore
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ inputs.kernel_branch }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.KERNEL_BRANCH }}
           restore-keys: |
             ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-
             ${{ env.CCACHE_REAL_KEY }}-
@@ -418,46 +457,45 @@ jobs:
             # hunk dump, and leave any .rej files for the artifact-upload
             # step below to pick up.
             #
-            # Fix (13 Sept 2026+): fs/stat.c and fs/statfs.c don't need
-            # this patch's hunks at all - kernel_patches/fs/* above already
-            # dropped in susfs4ksu's own complete, pre-patched copies of
-            # both files, and the inline fixup below patches them again
-            # in place regardless of what happens here. Their hunks in
-            # this unified patch are pure redundancy for us.
-            # That used to be harmless (patch -N quietly no-ops a hunk it
-            # finds already applied), but during the ongoing SUS_KSTAT/
-            # statfs rework, susfs4ksu's standalone fs/stat.c/fs/statfs.c
-            # and this same patch's hunks for those two files have drifted
-            # out of sync with EACH OTHER upstream (see Numbersf/Action-
-            # Build#269 for the sibling case) - so -N's "already applied"
-            # check no longer matches and every hunk for just these two
-            # files hard-fails (patch-rejects artifact showed 6/6 and 3/3
-            # hunks rejected on fs/stat.c and fs/statfs.c, every other
-            # file in the same patch applying fine).
-            # Strip those two files out of the patch before applying it,
-            # rather than pinning susfs_commit to dodge it - every other
-            # file's hunks (the ones that actually matter here) are
-            # untouched and still fail loudly below if THEY drift.
-            filterdiff -x '*fs/stat.c' -x '*fs/statfs.c' \
-              50_add_susfs_in_gki-android12-5.10.patch \
+            # fs/stat.c and fs/statfs.c: a kernel source that already carries SuSFS code there
+            # (Melt does) gets these two files' hunks skipped - during the Sept 2026
+            # SUS_KSTAT/statfs rework they drifted out of sync with such pre-patched copies and
+            # every one of them was rejected (Numbersf/Action-Build#269 for the sibling case).
+            # A clean source (LineageOS) needs them applied, or the SUS_KSTAT hooks are
+            # silently missing. Decided per file from the tree itself; the extern/wrapper
+            # fixups below run either way.
+            SUSFS_SKIP=()
+            for f in fs/stat.c fs/statfs.c; do
+              if grep -q susfs "$f"; then
+                SUSFS_SKIP+=("$f")
+                echo "==> SUSFS: ${f} already carries SuSFS code in this kernel source - skipping its hunks"
+              else
+                echo "==> SUSFS: ${f} has no SuSFS code yet - applying its hunks"
+              fi
+            done
+            FD_ARGS=()
+            for f in "${SUSFS_SKIP[@]}"; do FD_ARGS+=(-x "*${f}"); done
+            filterdiff "${FD_ARGS[@]}" 50_add_susfs_in_gki-android12-5.10.patch \
               > 50_add_susfs_in_gki-android12-5.10.filtered.patch
 
             if [[ ! -s 50_add_susfs_in_gki-android12-5.10.filtered.patch ]]; then
-              echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook instead of just fs/stat.c and fs/statfs.c."
+              echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook."
               exit 1
             fi
 
-            if grep -qE '^\+\+\+ .*fs/stat(fs)?\.c' 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
-              echo "::error::fs/stat.c or fs/statfs.c hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust the -x patterns."
-              exit 1
-            fi
+            for f in "${SUSFS_SKIP[@]}"; do
+              if grep -qE "^\+\+\+ .*/${f//./\\.}([[:space:]]|\$)" 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+                echo "::error::${f} hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust them."
+                exit 1
+              fi
+            done
 
             # -N (--forward): still worth keeping for any other overlap
             # (e.g. BBG/NoMount/DroidSpaces touching the same fs/ files) -
             # this only ever silently skips a hunk that's genuinely already
             # applied; anything that doesn't match still fails loudly below.
             if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
-              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (fs/stat.c and fs/statfs.c hunks were excluded before this ran - see comment above, not the cause here). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
+              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (skipped files, if any: ${SUSFS_SKIP[*]:-none} - see the stat.c/statfs.c note above). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
               exit 1
             fi
 
@@ -510,6 +548,22 @@ jobs:
               fi
             done
             echo "susfs stat.c/statfs.c extern check: OK"
+
+            # Fix (susfs4ksu 5a3af83, 19 Oct 2026+): fs/exec.c now calls official KernelSU's
+            # module-preinit API (ksu_setup_preinit_file / ksu_preinit_handle_post_execveat)
+            # unless KSU_NO_PREINIT is defined. A KernelSU without that feature (BakaSU so far)
+            # compiles fine but fails at the final vmlinux link with undefined references, so
+            # set the switch susfs provides for exactly this case - only when the integrated
+            # driver lacks the API, so a KernelSU that has it keeps preinit working.
+            if grep -rqs 'ksu_setup_preinit_file' drivers/kernelsu/; then
+              echo "==> SUSFS: this KernelSU provides module preinit - leaving its fs/exec.c hooks on"
+            else
+              for f in $(grep -rlE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' fs kernel mm security include 2>/dev/null); do
+                ln=$(grep -nE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' "$f" | head -1 | cut -d: -f1)
+                sed -i "${ln}i #define KSU_NO_PREINIT /* ${{ inputs.ksu_type }} has no module-preinit API (set by build workflow) */" "$f"
+                echo "[fixed] ${f}: defined KSU_NO_PREINIT (${{ inputs.ksu_type }} has no ksu_setup_preinit_file)"
+              done
+            fi
 
             # Fix: same SUS_KSTAT/statfs rework as the extern fixup above,
             # one step further along. susfs.c (susfs_mark_inode_sus_kstat)
@@ -747,7 +801,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ inputs.kernel_branch }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.KERNEL_BRANCH }}
 
       - name: Upload resolved defconfig (debug artifact)
         if: always()
@@ -947,8 +1001,8 @@ jobs:
           | 🖥️ Kernel Name | ${KERNEL_NAME} |
           | 🧬 Kernel Base | ${KERNEL_BASE} |
           | 🛠️ Build Scope | ZIP |
-          | 📦 Source | ${{ inputs.kernel_source }} |
-          | ⚔️ Kernel branch | ${{ inputs.kernel_branch }} |
+          | 📦 Source | ${KERNEL_SOURCE_URL} |
+          | ⚔️ Kernel branch | ${KERNEL_BRANCH} |
           | 💻 KSU Manager type | ${ksu_label} |
           | 📲 Manager APK | ${manager_checkbox} |
           | 🔧 SuSFS Version | ${susfs_checkbox} |
