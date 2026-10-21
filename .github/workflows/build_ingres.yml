@@ -473,6 +473,23 @@ jobs:
                 echo "==> SUSFS: ${f} has no SuSFS code yet - applying its hunks"
               fi
             done
+
+            # security/selinux/hooks.c + selinuxfs.c carry only susfs's selinux_hide hooks. Since
+            # susfs4ksu e24d172 (19 Oct 2026) they call the KernelSU driver's my_setprocattr /
+            # my_write_context / my_write_access, which must be non-static there. KernelSU-Next
+            # dev-susfs exports them; BakaSU keeps them static and, once it sees these hooks in
+            # hooks.c, compiles them out (susfs mode) - undefined symbols at the vmlinux link.
+            # Without the hooks BakaSU runs selinux_hide itself (its own documented fallback:
+            # "selinux_hide still working, but it will handle in BakaSU instead of susfs").
+            SELINUX_HIDE_MISSING=()
+            for fn in $(grep -oE '\bmy_(setprocattr|write_context|write_access)\b' 50_add_susfs_in_gki-android12-5.10.patch | sort -u); do
+              grep -rhsE "^[a-z_][a-z0-9_ *]*\b${fn}[[:space:]]*\(" drivers/kernelsu/ \
+                | grep -vqE '^static|;[[:space:]]*$' || SELINUX_HIDE_MISSING+=("$fn")
+            done
+            if [[ ${#SELINUX_HIDE_MISSING[@]} -gt 0 ]]; then
+              SUSFS_SKIP+=(security/selinux/hooks.c security/selinux/selinuxfs.c)
+              echo "==> SUSFS: ${{ inputs.ksu_type }} does not export ${SELINUX_HIDE_MISSING[*]} - skipping susfs's selinux_hide hooks (hooks.c, selinuxfs.c); ${{ inputs.ksu_type }} handles selinux_hide itself"
+            fi
             FD_ARGS=()
             for f in "${SUSFS_SKIP[@]}"; do FD_ARGS+=(-x "*${f}"); done
             filterdiff "${FD_ARGS[@]}" 50_add_susfs_in_gki-android12-5.10.patch \
