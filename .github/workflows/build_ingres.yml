@@ -1,19 +1,19 @@
-name: Compile Kernel Melt / LineageOS - POCO F4 GT (Ingres)
+name: Compile Kernel Melt / Stock AOSP-AOSPA - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Kernel source to build: Melt = kingD2N/kernel_source_Melt_xiaomi_ingres, LineageOS = kingD2N/android_kernel_xiaomi_sm8450"
+        description: "Kernel source to build: Melt = kingD2N/kernel_source_Melt_xiaomi_ingres, Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450"
         required: true
         type: choice
         default: Melt
         options:
           - Melt
-          - LineageOS
+          - Stock AOSP-AOSPA
 
       kernel_branch:
-        description: "Branch of the chosen kernel source. auto = melt-MIX for Melt, lineage-23.2 for LineageOS (the repo's default branch for kernel_source_url). A branch the chosen repo does not have stops the build at once, listing the ones it has."
+        description: "Branch of the chosen kernel source. auto = melt-MIX for Melt, lineage-23.2 for Stock AOSP-AOSPA (the repo's default branch for kernel_source_url). A branch the chosen repo does not have stops the build at once, listing the ones it has."
         required: true
         type: choice
         default: auto
@@ -25,7 +25,7 @@ on:
           - lineage-23.2
 
       kernel_source_url:
-        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty for Melt / LineageOS)"
+        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty for Melt / Stock AOSP-AOSPA)"
         required: false
         type: string
         default: ""
@@ -71,7 +71,7 @@ on:
           - Melt-KERNEL
           - MIX™-KERNEL
           - LazyGoogle-KERNEL
-          - LineageOS-KERNEL
+          - Stock-AOSP-AOSPA-KERNEL
 
       susfs:
         description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
@@ -184,7 +184,7 @@ jobs:
           # kernel_source -> repo + its default branch; KERNEL_SOURCE_TAG keeps each source's ccache
           # apart (empty for Melt, so its existing cache keys stay valid).
           case "${{ inputs.kernel_source }}" in
-            LineageOS) URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450;   DEF=lineage-23.2; TAG=-lineageos ;;
+            "Stock AOSP-AOSPA") URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa ;;
             *)         URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX;     TAG= ;;
           esac
           if [[ -n "$KSRC_URL_INPUT" ]]; then
@@ -461,7 +461,7 @@ jobs:
             # (Melt does) gets these two files' hunks skipped - during the Sept 2026
             # SUS_KSTAT/statfs rework they drifted out of sync with such pre-patched copies and
             # every one of them was rejected (Numbersf/Action-Build#269 for the sibling case).
-            # A clean source (LineageOS) needs them applied, or the SUS_KSTAT hooks are
+            # A clean source (Stock AOSP-AOSPA) needs them applied, or the SUS_KSTAT hooks are
             # silently missing. Decided per file from the tree itself; the extern/wrapper
             # fixups below run either way.
             SUSFS_SKIP=()
