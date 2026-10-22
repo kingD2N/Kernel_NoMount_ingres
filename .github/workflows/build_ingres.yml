@@ -1,19 +1,20 @@
-name: Compile Kernel Melt / Stock AOSP-AOSPA - POCO F4 GT (Ingres)
+name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Kernel source to build: Melt = kingD2N/kernel_source_Melt_xiaomi_ingres, Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs)"
         required: true
         type: choice
         default: Melt
         options:
           - Melt
           - Stock AOSP-AOSPA
+          - Stock HyperOS
 
       kernel_branch:
-        description: "Branch of the chosen kernel source. auto = melt-MIX for Melt, lineage-23.2 for Stock AOSP-AOSPA (the repo's default branch for kernel_source_url). A branch the chosen repo does not have stops the build at once, listing the ones it has."
+        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA), Yudharn-melt-rebase (Stock HyperOS). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -22,10 +23,11 @@ on:
           - melt-MIX
           - melt-rebase-4LazyGoogle
           - LazyGoogle_ORI
-          - lineage-23.2
+          - melt-rebase
+          - Yudharn-melt-rebase
 
       kernel_source_url:
-        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty for Melt / Stock AOSP-AOSPA)"
+        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty normally)"
         required: false
         type: string
         default: ""
@@ -63,15 +65,17 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix)"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-HyperOS-KERNEL"
         required: false
         type: choice
-        default: MIX™-KERNEL
+        default: auto
         options:
-          - Melt-KERNEL
+          - auto
           - MIX™-KERNEL
+          - Melt-KERNEL
           - LazyGoogle-KERNEL
           - Stock-AOSP-AOSPA-KERNEL
+          - Stock-HyperOS-KERNEL
 
       susfs:
         description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
@@ -181,14 +185,22 @@ jobs:
         env:
           KSRC_URL_INPUT: ${{ inputs.kernel_source_url }}
         run: |
-          # kernel_source -> repo + its default branch; KERNEL_SOURCE_TAG keeps each source's ccache
-          # apart (empty for Melt, so its existing cache keys stay valid).
+          # Per source: repo, default branch, ccache tag (empty for Melt so its cache keys stay
+          # as they were), kernel name for custom_name=auto, ROM line for the release notes, and
+          # the config set (hyperos = ingres HyperOS fragments from configs/hyperos/).
           case "${{ inputs.kernel_source }}" in
-            "Stock AOSP-AOSPA") URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa ;;
-            *)         URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX;     TAG= ;;
+            "Stock AOSP-AOSPA")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa
+              NAME=Stock-AOSP-AOSPA-KERNEL; ROM="Official AOSP / AOSPA"; CFG= ;;
+            "Stock HyperOS")
+              URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
+              NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
+            *)
+              URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX; TAG=
+              NAME=MIX™-KERNEL; ROM="Official AOSP"; CFG= ;;
           esac
           if [[ -n "$KSRC_URL_INPUT" ]]; then
-            URL="$KSRC_URL_INPUT"; DEF=""; TAG=-custom
+            URL="$KSRC_URL_INPUT"; DEF=""; TAG=-custom; NAME=Custom-KERNEL
           fi
           BR="${{ inputs.kernel_branch }}"
           if [[ "$BR" == auto ]]; then
@@ -204,6 +216,9 @@ jobs:
             echo "KERNEL_SOURCE_URL=${URL}"
             echo "KERNEL_BRANCH=${BR}"
             echo "KERNEL_SOURCE_TAG=${TAG}"
+            echo "KERNEL_AUTO_NAME=${NAME}"
+            echo "KERNEL_ROM_SUPPORT=${ROM}"
+            echo "KERNEL_CONFIG_SET=${CFG}"
           } >> "$GITHUB_ENV"
 
           git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
@@ -659,11 +674,11 @@ jobs:
           echo "ccache status before build:"
           ccache -s
 
-          if [[ -n "${{ inputs.custom_name }}" ]]; then
-            KERNEL_NAME="${{ inputs.custom_name }}"
-          else
-            KERNEL_NAME="${{ inputs.ksu_type }}"
-          fi
+          case "${{ inputs.custom_name }}" in
+            auto) KERNEL_NAME="${KERNEL_AUTO_NAME}" ;;
+            "")   KERNEL_NAME="${{ inputs.ksu_type }}" ;;
+            *)    KERNEL_NAME="${{ inputs.custom_name }}" ;;
+          esac
 
           echo "KERNEL_NAME=${KERNEL_NAME}" >> $GITHUB_ENV
 
@@ -772,6 +787,21 @@ jobs:
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
 
           echo "CONFIG_TMPFS_XATTR=y" >> arch/arm64/configs/gki_defconfig
+
+          # Stock HyperOS: kingD2NN/Pzqqt-Melt-Rebase is Pzqqt's Melt for marble and has no ingres
+          # fragments, so the ingres HyperOS ones (from kingD2N/kernel_source_Melt_xiaomi_ingres
+          # MIUI_HOS, kept in configs/hyperos/) are added. Fragments the tree already has win.
+          # Their debugfs.config keeps CONFIG_DEBUG_FS=y, which stock vendor modules need.
+          if [[ "${KERNEL_CONFIG_SET}" == hyperos ]]; then
+            for f in xiaomi_GKI ingres_GKI debugfs; do
+              if [[ -f "arch/arm64/configs/vendor/${f}.config" ]]; then
+                echo "==> HyperOS config: vendor/${f}.config from the kernel source"
+              else
+                cp "${GITHUB_WORKSPACE}/configs/hyperos/${f}.config" "arch/arm64/configs/vendor/${f}.config"
+                echo "==> HyperOS config: vendor/${f}.config from configs/hyperos/"
+              fi
+            done
+          fi
 
           make O=out gki_defconfig vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config ${DROIDSPACES_CONFIG}
 
@@ -1014,7 +1044,7 @@ jobs:
           | | |
           |:---|:---|
           | 📱 Device | POCO F4 GT (ingres) • Redmi K50G (ingres) |
-          | 🟠 ROM Support | Official AOSP |
+          | 🟠 ROM Support | ${KERNEL_ROM_SUPPORT} |
           | 🖥️ Kernel Name | ${KERNEL_NAME} |
           | 🧬 Kernel Base | ${KERNEL_BASE} |
           | 🛠️ Build Scope | ZIP |
