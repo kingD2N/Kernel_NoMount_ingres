@@ -1,10 +1,10 @@
-name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS - POCO F4 GT (Ingres)
+name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS / Avalon - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs)"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter)"
         required: true
         type: choice
         default: Melt
@@ -12,9 +12,10 @@ on:
           - Melt
           - Stock AOSP-AOSPA
           - Stock HyperOS
+          - Avalon
 
       kernel_branch:
-        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA), Yudharn-melt-rebase (Stock HyperOS). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA), Yudharn-melt-rebase (Stock HyperOS), main (Avalon). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -65,7 +66,7 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-HyperOS-KERNEL"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL"
         required: false
         type: choice
         default: auto
@@ -76,6 +77,7 @@ on:
           - LazyGoogle-KERNEL
           - Stock-AOSP-AOSPA-KERNEL
           - Stock-HyperOS-KERNEL
+          - Avalon-KERNEL
 
       susfs:
         description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
@@ -186,8 +188,11 @@ jobs:
           KSRC_URL_INPUT: ${{ inputs.kernel_source_url }}
         run: |
           # Per source: repo, default branch, ccache tag (empty for Melt so its cache keys stay
-          # as they were), kernel name for custom_name=auto, ROM line for the release notes, and
-          # the config set (hyperos = ingres HyperOS fragments from configs/hyperos/).
+          # as they were), kernel name for custom_name=auto, ROM line for the release notes, the
+          # config set (hyperos = ingres HyperOS fragments from configs/hyperos/) and the
+          # defconfig + fragments the Compile step resolves.
+          DEFCONFIG=gki_defconfig
+          FRAGMENTS="vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config"
           case "${{ inputs.kernel_source }}" in
             "Stock AOSP-AOSPA")
               URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa
@@ -195,6 +200,10 @@ jobs:
             "Stock HyperOS")
               URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
               NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
+            "Avalon")
+              URL=https://github.com/ruik3z/kernel-ingres; DEF=main; TAG=-avalon
+              NAME=Avalon-KERNEL; ROM="Official AOSP (LineageOS 23.2 based)"; CFG=avalon
+              DEFCONFIG=ingres_user_defconfig; FRAGMENTS="" ;;
             *)
               URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX; TAG=
               NAME=MIX™-KERNEL; ROM="Official AOSP"; CFG= ;;
@@ -219,14 +228,35 @@ jobs:
             echo "KERNEL_AUTO_NAME=${NAME}"
             echo "KERNEL_ROM_SUPPORT=${ROM}"
             echo "KERNEL_CONFIG_SET=${CFG}"
+            echo "KERNEL_DEFCONFIG=${DEFCONFIG}"
+            echo "KERNEL_CONFIG_FRAGMENTS=${FRAGMENTS}"
           } >> "$GITHUB_ENV"
 
-          git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
-          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
+          if [[ "$CFG" == avalon ]]; then
+            # Avalon keeps the kernel in kernel/, its device trees in devicetrees/ and its vendor
+            # modules in modules/ - each goes where the other sources have it (modules_branch and
+            # devicetree_branch do not apply). Its bundled KernelSU-Next is an unversioned copy
+            # (it would report the fallback version 33129), so it gives way to ksu_type, which
+            # integrates the chosen KernelSU the same way as on every other source.
+            git clone --depth=1 -b "$BR" "$URL" avalon-src
+            mv avalon-src/kernel ${SOC}
+            mv avalon-src/modules ${SOC}-modules
+            rm -rf ${SOC}/arch/arm64/boot/dts/vendor
+            mv avalon-src/devicetrees ${SOC}/arch/arm64/boot/dts/vendor
+            rm -f ${SOC}/arch/arm64/boot/dts/vendor/sm8450-devicetrees  # symlink into the author's PC
+            rm -rf avalon-src
+            rm -rf ${SOC}/drivers/kernelsu ${SOC}/KernelSU-Next
+            sed -i '/kernelsu/d' ${SOC}/drivers/Makefile ${SOC}/drivers/Kconfig
+            sed -i '/^CONFIG_KSU=/d' ${SOC}/arch/arm64/configs/${DEFCONFIG}
+            echo "==> Avalon: kernel/, devicetrees/ and modules/ in place; bundled KernelSU-Next removed (ksu_type: ${{ inputs.ksu_type }})"
+          else
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
-          rm -rf ${SOC}/arch/arm64/boot/dts/vendor
-          git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
-            || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+            rm -rf ${SOC}/arch/arm64/boot/dts/vendor
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
+              || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+          fi
 
       - name: Detect kernel version
         run: |
@@ -631,15 +661,15 @@ jobs:
               echo "[fixed] fs/statfs.c: added ${SUSFS_MISSING_WRAPPERS[*]}"
             fi
 
-            echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
 
       - name: Compile Kernel
@@ -710,39 +740,42 @@ jobs:
             echo "==> NoMount: using maxsteeel/nomount@master (${NOMOUNT_COMMIT})"
 
             run_setup "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" master
-            echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "::endgroup::"
           fi
 
           if [[ "${{ inputs.BBG }}" == true ]]; then
             run_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh"
-            echo "CONFIG_BBG=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_BBG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+            # A full defconfig (Avalon) sets CONFIG_LSM itself, overriding the Kconfig default
+            # above - BBG's Makefile then stops the build. gki_defconfig has no such line.
+            sed -i '/^CONFIG_LSM=/{ /baseband_guard/! s/selinux/selinux,baseband_guard/ }' arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
 
           if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
             git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
             bash rekernel-src/Integrate/patches.sh
-            echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
 
           if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
 
-            echo "CONFIG_BPF_SYSCALL=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_BPF_JIT=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CGROUP_BPF=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_BPF_EVENTS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_UPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NET_CLS_ACT=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NET_CLS_BPF=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NET_ACT_BPF=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NET_SCH_INGRESS=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_DEBUG_INFO=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_DEBUG_INFO_BTF=y" >> arch/arm64/configs/gki_defconfig
-            echo "CONFIG_DEBUG_INFO_BTF_MODULES=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_BPF_SYSCALL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_BPF_JIT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_CGROUP_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_BPF_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KPROBES=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_UPROBE_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_CLS_ACT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_CLS_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_ACT_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_SCH_INGRESS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO_BTF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO_BTF_MODULES=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "==> Re-Kernel eBPF selected; will build after the kernel Image is ready."
           fi
 
@@ -786,7 +819,7 @@ jobs:
 
           echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
 
-          echo "CONFIG_TMPFS_XATTR=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TMPFS_XATTR=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
 
           # Stock HyperOS: kingD2NN/Pzqqt-Melt-Rebase is Pzqqt's Melt for marble and has no ingres
           # fragments, so the ingres HyperOS ones (from kingD2N/kernel_source_Melt_xiaomi_ingres
@@ -803,7 +836,8 @@ jobs:
             done
           fi
 
-          make O=out gki_defconfig vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config ${DROIDSPACES_CONFIG}
+          # Melt / Stock AOSP-AOSPA / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
+          make O=out ${KERNEL_DEFCONFIG} ${KERNEL_CONFIG_FRAGMENTS} ${DROIDSPACES_CONFIG}
 
           echo "::group::Sanity-check defconfig (savedefconfig)"
 
