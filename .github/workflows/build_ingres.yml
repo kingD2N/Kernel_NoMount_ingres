@@ -245,6 +245,16 @@ jobs:
             mv avalon-src/devicetrees ${SOC}/arch/arm64/boot/dts/vendor
             rm -f ${SOC}/arch/arm64/boot/dts/vendor/sm8450-devicetrees  # symlink into the author's PC
             rm -rf avalon-src
+            # techpack/Kbuild always builds stub/, but Avalon's techpack/.gitignore lists "*/" after
+            # "!/stub/", so the stub never got committed ("No rule to make target
+            # '../techpack/stub/Makefile'"). Recreate it as the LineageOS tree has it.
+            if [[ ! -d ${SOC}/techpack/stub ]] && grep -q 'stub/' ${SOC}/techpack/Kbuild 2>/dev/null; then
+              mkdir -p ${SOC}/techpack/stub/include/uapi/stub
+              printf '%s\n' '# SPDX-License-Identifier: GPL-2.0-only' 'ccflags-y := -Wno-unused-function' 'obj-y := stub.o' > ${SOC}/techpack/stub/Makefile
+              printf '%s\n' '// SPDX-License-Identifier: GPL-2.0-only' '' 'static void _techpack_stub(void)' '{' '}' > ${SOC}/techpack/stub/stub.c
+              printf '%s\n' '# SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note' '#Stub place holder' > ${SOC}/techpack/stub/include/uapi/stub/Kbuild
+              echo "==> Avalon: recreated techpack/stub (missing from the repo)"
+            fi
             rm -rf ${SOC}/drivers/kernelsu ${SOC}/KernelSU-Next
             sed -i '/kernelsu/d' ${SOC}/drivers/Makefile ${SOC}/drivers/Kconfig
             sed -i '/^CONFIG_KSU=/d' ${SOC}/arch/arm64/configs/${DEFCONFIG}
