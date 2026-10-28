@@ -4,18 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter)"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock AOSP-AOSPA (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter)"
         required: true
         type: choice
         default: Melt
         options:
           - Melt
           - Stock AOSP-AOSPA
+          - Stock AOSP-AOSPA (Pure)
           - Stock HyperOS
           - Avalon
 
       kernel_branch:
-        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA), Yudharn-melt-rebase (Stock HyperOS), main (Avalon). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA and its Pure build), Yudharn-melt-rebase (Stock HyperOS), main (Avalon). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -66,7 +67,7 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-AOSP-AOSPA-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL"
         required: false
         type: choice
         default: auto
@@ -76,6 +77,7 @@ on:
           - Melt-KERNEL
           - LazyGoogle-KERNEL
           - Stock-AOSP-AOSPA-KERNEL
+          - Stock-AOSP-AOSPA-PURE-KERNEL
           - Stock-HyperOS-KERNEL
           - Avalon-KERNEL
 
@@ -193,10 +195,14 @@ jobs:
           # defconfig + fragments the Compile step resolves.
           DEFCONFIG=gki_defconfig
           FRAGMENTS="vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config"
+          PURE=false
           case "${{ inputs.kernel_source }}" in
             "Stock AOSP-AOSPA")
               URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa
               NAME=Stock-AOSP-AOSPA-KERNEL; ROM="Official AOSP / AOSPA"; CFG= ;;
+            "Stock AOSP-AOSPA (Pure)")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa-pure
+              NAME=Stock-AOSP-AOSPA-PURE-KERNEL; ROM="Official AOSP / AOSPA"; CFG=; PURE=true ;;
             "Stock HyperOS")
               URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
               NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
@@ -230,6 +236,24 @@ jobs:
             echo "KERNEL_CONFIG_SET=${CFG}"
             echo "KERNEL_DEFCONFIG=${DEFCONFIG}"
             echo "KERNEL_CONFIG_FRAGMENTS=${FRAGMENTS}"
+          } >> "$GITHUB_ENV"
+
+          # Feature switches every later step reads (FEAT_*): the ticks as given, except for a
+          # Pure build, which turns every addition off whatever is ticked.
+          if [[ "$PURE" == true ]]; then
+            FEAT=(None false false false false false false)
+            echo "==> Pure stock build: KernelSU, SuSFS, BBG, Re-Kernel (netlink + eBPF), DroidSpaces and NoMount are off - their ticks are ignored"
+          else
+            FEAT=("${{ inputs.ksu_type }}" "${{ inputs.susfs }}" "${{ inputs.BBG }}" "${{ inputs.rekernel_netlink }}" "${{ inputs.rekernel_ebpf }}" "${{ inputs.droidspaces }}" "${{ inputs.nomount }}")
+          fi
+          {
+            echo "FEAT_KSU_TYPE=${FEAT[0]}"
+            echo "FEAT_SUSFS=${FEAT[1]}"
+            echo "FEAT_BBG=${FEAT[2]}"
+            echo "FEAT_REKERNEL_NETLINK=${FEAT[3]}"
+            echo "FEAT_REKERNEL_EBPF=${FEAT[4]}"
+            echo "FEAT_DROIDSPACES=${FEAT[5]}"
+            echo "FEAT_NOMOUNT=${FEAT[6]}"
           } >> "$GITHUB_ENV"
 
           if [[ "$CFG" == avalon ]]; then
@@ -311,7 +335,7 @@ jobs:
         run: |
           echo "CCACHE_DIR=$HOME/.ccache_ingres" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
             CCACHE_REAL_KEY=${CCACHE_KEY}-Droidspaces${KERNEL_SOURCE_TAG}
           else
             CCACHE_REAL_KEY=${CCACHE_KEY}-none${KERNEL_SOURCE_TAG}
@@ -404,7 +428,7 @@ jobs:
 
             if [[ -n "$req" ]]; then
               bakasu_checkout "$req" || { echo "::error::bakasu_ref '${req}' could not be checked out - use a tag, branch or commit SHA that exists on Baka-SU/BakaSU."; exit 1; }
-              if [[ "${{ inputs.susfs }}" == true ]] && bakasu_susfs_blocked; then
+              if [[ "${{ env.FEAT_SUSFS }}" == true ]] && bakasu_susfs_blocked; then
                 echo "::error::BakaSU ${req} hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above). Leave bakasu_ref empty for the automatic choice, or untick susfs."
                 exit 1
               fi
@@ -416,7 +440,7 @@ jobs:
                   echo "==> BakaSU: ${cand} does not exist (any more) - skipping it"
                   continue
                 fi
-                if [[ "${{ inputs.susfs }}" != true ]] || ! bakasu_susfs_blocked; then
+                if [[ "${{ env.FEAT_SUSFS }}" != true ]] || ! bakasu_susfs_blocked; then
                   used="$cand"
                   break
                 fi
@@ -435,7 +459,7 @@ jobs:
             echo "==> BakaSU: building ${used} (${BAKASU_COMMIT})"
           }
 
-          case "${{ inputs.ksu_type }}" in
+          case "${{ env.FEAT_KSU_TYPE }}" in
 
             "None")
               ;;
@@ -449,7 +473,7 @@ jobs:
               ;;
 
             "KernelSU-Next")
-              if [[ "${{ inputs.susfs }}" == true ]]; then
+              if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
                 run_setup "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" dev-susfs
               else
                 run_setup "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" dev
@@ -469,7 +493,7 @@ jobs:
         run: |
           cd ${SOC}
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
             # Shallow clone when just tracking the branch tip (the common
             # case); only pay for full history when pinning to a specific
             # older commit, since checking that commit out needs it.
@@ -543,7 +567,7 @@ jobs:
             done
             if [[ ${#SELINUX_HIDE_MISSING[@]} -gt 0 ]]; then
               SUSFS_SKIP+=(security/selinux/hooks.c security/selinux/selinuxfs.c)
-              echo "==> SUSFS: ${{ inputs.ksu_type }} does not export ${SELINUX_HIDE_MISSING[*]} - skipping susfs's selinux_hide hooks (hooks.c, selinuxfs.c); ${{ inputs.ksu_type }} handles selinux_hide itself"
+              echo "==> SUSFS: ${{ env.FEAT_KSU_TYPE }} does not export ${SELINUX_HIDE_MISSING[*]} - skipping susfs's selinux_hide hooks (hooks.c, selinuxfs.c); ${{ env.FEAT_KSU_TYPE }} handles selinux_hide itself"
             fi
             FD_ARGS=()
             for f in "${SUSFS_SKIP[@]}"; do FD_ARGS+=(-x "*${f}"); done
@@ -632,8 +656,8 @@ jobs:
             else
               for f in $(grep -rlE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' fs kernel mm security include 2>/dev/null); do
                 ln=$(grep -nE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' "$f" | head -1 | cut -d: -f1)
-                sed -i "${ln}i #define KSU_NO_PREINIT /* ${{ inputs.ksu_type }} has no module-preinit API (set by build workflow) */" "$f"
-                echo "[fixed] ${f}: defined KSU_NO_PREINIT (${{ inputs.ksu_type }} has no ksu_setup_preinit_file)"
+                sed -i "${ln}i #define KSU_NO_PREINIT /* ${{ env.FEAT_KSU_TYPE }} has no module-preinit API (set by build workflow) */" "$f"
+                echo "[fixed] ${f}: defined KSU_NO_PREINIT (${{ env.FEAT_KSU_TYPE }} has no ksu_setup_preinit_file)"
               done
             fi
 
@@ -716,7 +740,7 @@ jobs:
 
           case "${{ inputs.custom_name }}" in
             auto) KERNEL_NAME="${KERNEL_AUTO_NAME}" ;;
-            "")   KERNEL_NAME="${{ inputs.ksu_type }}" ;;
+            "")   KERNEL_NAME="${{ env.FEAT_KSU_TYPE }}" ;;
             *)    KERNEL_NAME="${{ inputs.custom_name }}" ;;
           esac
 
@@ -735,9 +759,9 @@ jobs:
             rm -f "$f"
           }
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
             echo "::group::NoMount integration"
-            if [[ "${{ inputs.susfs }}" == true ]]; then
+            if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
               echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
             fi
 
@@ -754,7 +778,7 @@ jobs:
             echo "::endgroup::"
           fi
 
-          if [[ "${{ inputs.BBG }}" == true ]]; then
+          if [[ "${{ env.FEAT_BBG }}" == true ]]; then
             run_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh"
             echo "CONFIG_BBG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
@@ -763,14 +787,14 @@ jobs:
             sed -i '/^CONFIG_LSM=/{ /baseband_guard/! s/selinux/selinux,baseband_guard/ }' arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
 
-          if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
+          if [[ "${{ env.FEAT_REKERNEL_NETLINK }}" == true ]]; then
             git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
             bash rekernel-src/Integrate/patches.sh
             echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
 
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
 
             echo "CONFIG_BPF_SYSCALL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_BPF_JIT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
@@ -790,7 +814,7 @@ jobs:
           fi
 
           DROIDSPACES_CONFIG=""
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
 
             apply_droidspaces_patch() {
               local patch_file="$1" label="$2"
@@ -898,7 +922,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: resolved-defconfig-${{ inputs.ksu_type }}
+          name: resolved-defconfig-${{ env.FEAT_KSU_TYPE }}
           path: resolved_defconfig.txt
           if-no-files-found: warn
 
@@ -906,12 +930,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: susfs-patch-rejects-${{ inputs.ksu_type }}
+          name: susfs-patch-rejects-${{ env.FEAT_KSU_TYPE }}
           path: ${{ env.SOC }}/**/*.rej
           if-no-files-found: ignore
 
       - name: Build Re-Kernel (eBPF)
-        if: ${{ inputs.rekernel_ebpf }}
+        if: ${{ env.FEAT_REKERNEL_EBPF == 'true' }}
         run: |
           set -e
 
@@ -954,7 +978,7 @@ jobs:
       # (the link BakaSU's own README uses). Attached only if its MINIMAL_SUPPORTED_KERNEL (Natives.kt)
       # covers this kernel's version code. Never fails the build: problems are warnings.
       - name: Fetch BakaSU manager
-        if: ${{ inputs.ksu_type == 'BakaSU' || inputs.ksu_type == 'ReSukiSU' }}
+        if: ${{ env.FEAT_KSU_TYPE == 'BakaSU' || env.FEAT_KSU_TYPE == 'ReSukiSU' }}
         run: |
           set -o pipefail
           K="${GITHUB_WORKSPACE}/${SOC}/KernelSU"
@@ -1000,13 +1024,13 @@ jobs:
 
       - name: Make AnyKernel3
         run: |
-          ZIP_NAME="${KERNEL_NAME}_${{ inputs.ksu_type }}"
+          ZIP_NAME="${KERNEL_NAME}_${{ env.FEAT_KSU_TYPE }}"
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}_SuSFS"
           fi
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
             ZIP_NAME="${ZIP_NAME}_NoMount"
           fi
 
@@ -1028,7 +1052,7 @@ jobs:
           ZIP_FILE=$(ls *.zip)
 
           # BAKASU_COMMIT is only set (via GITHUB_ENV) for the BakaSU / ReSukiSU options.
-          ksu_label="${{ inputs.ksu_type }}"
+          ksu_label="${{ env.FEAT_KSU_TYPE }}"
           if [[ -n "${BAKASU_COMMIT:-}" ]]; then
             ksu_label="${ksu_label}@${BAKASU_COMMIT}"
           fi
@@ -1040,41 +1064,41 @@ jobs:
           else
             manager_checkbox="Not attached"
           fi
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
             ASSETS+=("rekernel-ebpf-out/rekernel.bpf.o" "rekernel-ebpf-out/rekerneld_aarch64")
           fi
 
-          if [[ "${{ inputs.susfs }}" == true ]]; then
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
             susfs_checkbox="Supported (susfs4ksu@${SUSFS_COMMIT})"
           else
             susfs_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.BBG }}" == true ]]; then
+          if [[ "${{ env.FEAT_BBG }}" == true ]]; then
             bbg_checkbox="Supported"
           else
             bbg_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.rekernel_netlink }}" == true ]]; then
+          if [[ "${{ env.FEAT_REKERNEL_NETLINK }}" == true ]]; then
             rekernel_netlink_checkbox="Supported"
           else
             rekernel_netlink_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.rekernel_ebpf }}" == true ]]; then
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
             rekernel_ebpf_checkbox="Supported (daemon+prog attached as release assets)"
           else
             rekernel_ebpf_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.droidspaces }}" == true ]]; then
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
             droidspaces_checkbox="Supported"
           else
             droidspaces_checkbox="Unsupported"
           fi
 
-          if [[ "${{ inputs.nomount }}" == true ]]; then
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
             nomount_checkbox="Supported (maxsteeel/nomount@master@${NOMOUNT_COMMIT})"
           else
             nomount_checkbox="Unsupported"
