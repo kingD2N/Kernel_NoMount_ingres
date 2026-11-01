@@ -1,0 +1,1140 @@
+name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS / Avalon / Sony-Nagara - POCO F4 GT (Ingres)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_source:
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock AOSP-AOSPA (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Sony-Nagara = kingD2N/android_kernel_sony_sm8450 (sony-nagara fork for ingres, default branch lineage-24.0)"
+        required: true
+        type: choice
+        default: Melt
+        options:
+          - Melt
+          - Stock AOSP-AOSPA
+          - Stock AOSP-AOSPA (Pure)
+          - Stock HyperOS
+          - Avalon
+          - Sony-Nagara
+
+      kernel_branch:
+        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA and its Pure build), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Sony-Nagara). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        required: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - melt-MIX
+          - melt-rebase-4LazyGoogle
+          - LazyGoogle_ORI
+          - melt-rebase
+          - Yudharn-melt-rebase
+          - lineage-24.0
+
+      kernel_source_url:
+        description: "Optional: any other kernel git URL - overrides kernel_source (leave empty normally)"
+        required: false
+        type: string
+        default: ""
+
+      modules_branch:
+        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch)"
+        required: true
+        type: string
+        default: "lineage-23.2"
+
+      devicetree_branch:
+        description: "Branch of Ingres-Centre/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead)"
+        required: true
+        type: string
+        default: "lineage-23.2"
+
+      ksu_type:
+        description: "KernelSU variant (BakaSU and ReSukiSU are the same project - see bakasu_ref)"
+        required: true
+        type: choice
+        default: "BakaSU"
+        options:
+          - None
+          - Official-KernelSU
+          - KernelSU-Next
+          - KowSU
+          - ReSukiSU
+          - BakaSU
+          - SukiSUUltra
+
+      bakasu_ref:
+        description: "Only for ksu_type BakaSU / ReSukiSU (the same project). Tag, branch or commit of Baka-SU/BakaSU. Leave empty (default) to pick automatically: main if it builds with susfs, else the dev branch with the susfs re-sync (BAKASU_DEV_BRANCH, sync-susfs), else the last known-good commit - and back to main by itself once BakaSU merges the re-sync. Set a ref to build exactly that one (fails within seconds if it blocks susfs)."
+        required: false
+        type: string
+        default: ""
+
+      custom_name:
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-AOSP-AOSPA-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Sony-Nagara-KERNEL"
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - MIX™-KERNEL
+          - Melt-KERNEL
+          - LazyGoogle-KERNEL
+          - Stock-AOSP-AOSPA-KERNEL
+          - Stock-AOSP-AOSPA-PURE-KERNEL
+          - Stock-HyperOS-KERNEL
+          - Avalon-KERNEL
+          - Sony-Nagara-KERNEL
+
+      susfs:
+        description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
+        required: true
+        type: boolean
+        default: true
+
+      susfs_commit:
+        description: "Commit SHA of susfs4ksu (gki-android12-5.10) to pin. Leave empty (default) to track the branch tip - the extern/wrapper gaps from the Sept 2026 SUS_KSTAT/statfs rework are patched automatically in the Integrate SuSFS step (no-ops once upstream fixes them). Set a short SHA only to pin or test a specific commit."
+        required: false
+        type: string
+        default: ""
+
+      BBG:
+        description: "Add BBG support"
+        required: true
+        type: boolean
+        default: true
+
+      rekernel_netlink:
+        description: "Add Re-Kernel support (Netlink)"
+        required: true
+        type: boolean
+        default: true
+
+      rekernel_ebpf:
+        description: "Add Re-Kernel support (eBPF)"
+        required: true
+        type: boolean
+        default: true
+
+      droidspaces:
+        description: "Add DroidSpaces support"
+        required: true
+        type: boolean
+        default: true
+
+      nomount:
+        description: "Add NoMount support (kernel VFS path redirection/injection, maxsteeel/nomount@master - auto-updates to whatever's newest on that branch each run; may conflict with susfs since both patch fs/namei.c)"
+        required: true
+        type: boolean
+        default: true
+
+      ccache_update:
+        description: "Refresh ccache (overwrite the repo cache with this build's ccache; enable when u changed configs/source or need a clean cache)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  Build_Kernel:
+    env:
+        GH_TOKEN: ${{ github.token }}
+        SOC: sm8450
+        CCACHE_KEY: ccache-ecsv3-ingres-sm8450
+        # Last Baka-SU/BakaSU commit (5 Oct 2026, just before the 8 Oct selinux_hide
+        # changes) that builds with susfs4ksu's gki-android12-5.10 patch. Last-resort
+        # fallback while main and BAKASU_DEV_BRANCH are blocked - see setup_bakasu in
+        # the "Integrate KernelSU" step. Bump it once a newer commit is confirmed to work.
+        BAKASU_KNOWN_GOOD: "9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
+        # BakaSU dev branch carrying the susfs re-sync (14 Oct 2026). Tried after main and
+        # before BAKASU_KNOWN_GOOD; skipped automatically once it is merged and deleted.
+        BAKASU_DEV_BRANCH: "sync-susfs"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      checks: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Setup SWAP
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+          bc bison flex \
+          libssl-dev \
+          libelf-dev \
+          libdw-dev \
+          build-essential \
+          lz4 \
+          git \
+          python3 \
+          curl \
+          dwarves \
+          cpio \
+          ccache \
+          zstd \
+          unzip \
+          patchutils \
+          gcc-aarch64-linux-gnu
+
+      - name: Clone Kernel Source
+        env:
+          KSRC_URL_INPUT: ${{ inputs.kernel_source_url }}
+        run: |
+          # Per source: repo, default branch, ccache tag (empty for Melt so its cache keys stay
+          # as they were), kernel name for custom_name=auto, ROM line for the release notes, the
+          # config set (hyperos = ingres HyperOS fragments from configs/hyperos/) and the
+          # defconfig + fragments the Compile step resolves.
+          DEFCONFIG=gki_defconfig
+          FRAGMENTS="vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config"
+          PURE=false
+          case "${{ inputs.kernel_source }}" in
+            "Stock AOSP-AOSPA")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa
+              NAME=Stock-AOSP-AOSPA-KERNEL; ROM="Official AOSP / AOSPA"; CFG= ;;
+            "Stock AOSP-AOSPA (Pure)")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa-pure
+              NAME=Stock-AOSP-AOSPA-PURE-KERNEL; ROM="Official AOSP / AOSPA"; CFG=; PURE=true ;;
+            "Stock HyperOS")
+              URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
+              NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
+            "Avalon")
+              URL=https://github.com/ruik3z/kernel-ingres; DEF=main; TAG=-avalon
+              NAME=Avalon-KERNEL; ROM="Official AOSP (LineageOS 23.2 based)"; CFG=avalon
+              DEFCONFIG=ingres_user_defconfig; FRAGMENTS="" ;;
+            "Sony-Nagara")
+              URL=https://github.com/kingD2N/android_kernel_sony_sm8450; DEF=lineage-24.0; TAG=-sony
+              NAME=Sony-Nagara-KERNEL; ROM="Official AOSP (LineageOS 24.0 based)"; CFG= ;;
+            *)
+              URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX; TAG=
+              NAME=MIX™-KERNEL; ROM="Official AOSP"; CFG= ;;
+          esac
+          if [[ -n "$KSRC_URL_INPUT" ]]; then
+            URL="$KSRC_URL_INPUT"; DEF=""; TAG=-custom; NAME=Custom-KERNEL
+          fi
+          BR="${{ inputs.kernel_branch }}"
+          if [[ "$BR" == auto ]]; then
+            BR="$DEF"
+            [[ -n "$BR" ]] || BR=$(git ls-remote --symref "$URL" HEAD | sed -n 's#^ref: refs/heads/\(.*\)[[:space:]]HEAD$#\1#p')
+          fi
+          if ! git ls-remote --exit-code --heads "$URL" "$BR" > /dev/null; then
+            echo "::error::branch '${BR}' does not exist in ${URL} - its branches: $(git ls-remote --heads "$URL" | sed 's#.*refs/heads/##' | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "==> Kernel source: ${URL} @ ${BR}"
+          {
+            echo "KERNEL_SOURCE_URL=${URL}"
+            echo "KERNEL_BRANCH=${BR}"
+            echo "KERNEL_SOURCE_TAG=${TAG}"
+            echo "KERNEL_AUTO_NAME=${NAME}"
+            echo "KERNEL_ROM_SUPPORT=${ROM}"
+            echo "KERNEL_CONFIG_SET=${CFG}"
+            echo "KERNEL_DEFCONFIG=${DEFCONFIG}"
+            echo "KERNEL_CONFIG_FRAGMENTS=${FRAGMENTS}"
+          } >> "$GITHUB_ENV"
+
+          # Feature switches every later step reads (FEAT_*): the ticks as given, except for a
+          # Pure build, which turns every addition off whatever is ticked.
+          if [[ "$PURE" == true ]]; then
+            FEAT=(None false false false false false false)
+            echo "==> Pure stock build: KernelSU, SuSFS, BBG, Re-Kernel (netlink + eBPF), DroidSpaces and NoMount are off - their ticks are ignored"
+          else
+            FEAT=("${{ inputs.ksu_type }}" "${{ inputs.susfs }}" "${{ inputs.BBG }}" "${{ inputs.rekernel_netlink }}" "${{ inputs.rekernel_ebpf }}" "${{ inputs.droidspaces }}" "${{ inputs.nomount }}")
+          fi
+          {
+            echo "FEAT_KSU_TYPE=${FEAT[0]}"
+            echo "FEAT_SUSFS=${FEAT[1]}"
+            echo "FEAT_BBG=${FEAT[2]}"
+            echo "FEAT_REKERNEL_NETLINK=${FEAT[3]}"
+            echo "FEAT_REKERNEL_EBPF=${FEAT[4]}"
+            echo "FEAT_DROIDSPACES=${FEAT[5]}"
+            echo "FEAT_NOMOUNT=${FEAT[6]}"
+          } >> "$GITHUB_ENV"
+
+          if [[ "$CFG" == avalon ]]; then
+            # Avalon keeps the kernel in kernel/, its device trees in devicetrees/ and its vendor
+            # modules in modules/ - each goes where the other sources have it (modules_branch and
+            # devicetree_branch do not apply). Its bundled KernelSU-Next is an unversioned copy
+            # (it would report the fallback version 33129), so it gives way to ksu_type, which
+            # integrates the chosen KernelSU the same way as on every other source.
+            git clone --depth=1 -b "$BR" "$URL" avalon-src
+            mv avalon-src/kernel ${SOC}
+            mv avalon-src/modules ${SOC}-modules
+            rm -rf ${SOC}/arch/arm64/boot/dts/vendor
+            mv avalon-src/devicetrees ${SOC}/arch/arm64/boot/dts/vendor
+            rm -f ${SOC}/arch/arm64/boot/dts/vendor/sm8450-devicetrees  # symlink into the author's PC
+            rm -rf avalon-src
+            # techpack/Kbuild always builds stub/, but Avalon's techpack/.gitignore lists "*/" after
+            # "!/stub/", so the stub never got committed ("No rule to make target
+            # '../techpack/stub/Makefile'"). Recreate it as the LineageOS tree has it.
+            if [[ ! -d ${SOC}/techpack/stub ]] && grep -q 'stub/' ${SOC}/techpack/Kbuild 2>/dev/null; then
+              mkdir -p ${SOC}/techpack/stub/include/uapi/stub
+              printf '%s\n' '# SPDX-License-Identifier: GPL-2.0-only' 'ccflags-y := -Wno-unused-function' 'obj-y := stub.o' > ${SOC}/techpack/stub/Makefile
+              printf '%s\n' '// SPDX-License-Identifier: GPL-2.0-only' '' 'static void _techpack_stub(void)' '{' '}' > ${SOC}/techpack/stub/stub.c
+              printf '%s\n' '# SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note' '#Stub place holder' > ${SOC}/techpack/stub/include/uapi/stub/Kbuild
+              echo "==> Avalon: recreated techpack/stub (missing from the repo)"
+            fi
+            rm -rf ${SOC}/drivers/kernelsu ${SOC}/KernelSU-Next
+            sed -i '/kernelsu/d' ${SOC}/drivers/Makefile ${SOC}/drivers/Kconfig
+            sed -i '/^CONFIG_KSU=/d' ${SOC}/arch/arm64/configs/${DEFCONFIG}
+            echo "==> Avalon: kernel/, devicetrees/ and modules/ in place; bundled KernelSU-Next removed (ksu_type: ${{ inputs.ksu_type }})"
+          else
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
+
+            rm -rf ${SOC}/arch/arm64/boot/dts/vendor
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
+              || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+          fi
+
+      - name: Detect kernel version
+        run: |
+          KVERSION=$(grep -m1 '^VERSION = ' ${SOC}/Makefile | awk '{print $3}')
+          KPATCHLEVEL=$(grep -m1 '^PATCHLEVEL = ' ${SOC}/Makefile | awk '{print $3}')
+          KSUBLEVEL=$(grep -m1 '^SUBLEVEL = ' ${SOC}/Makefile | awk '{print $3}')
+
+          if [[ -z "$KVERSION" || -z "$KPATCHLEVEL" || -z "$KSUBLEVEL" ]]; then
+            echo "::error::Couldn't parse VERSION/PATCHLEVEL/SUBLEVEL from ${SOC}/Makefile (got '${KVERSION}.${KPATCHLEVEL}.${KSUBLEVEL}'). Has the Makefile's header format changed on this branch?"
+            exit 1
+          fi
+
+          KERNEL_BASE="android12-${KVERSION}.${KPATCHLEVEL}.${KSUBLEVEL}"
+          echo "==> Detected kernel version: ${KERNEL_BASE}"
+          echo "KERNEL_BASE=${KERNEL_BASE}" >> $GITHUB_ENV
+
+      - name: Download LLVM (latest stable release)
+        run: |
+          mkdir -p toolchains
+          cd toolchains
+
+          LLVM_TAG=$(gh release list --repo llvm/llvm-project --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
+          if [[ -z "$LLVM_TAG" ]]; then
+            echo "::error::Could not determine the latest llvm/llvm-project release tag via gh CLI."
+            exit 1
+          fi
+          LLVM_VERSION="${LLVM_TAG#llvmorg-}"
+          echo "==> Latest LLVM release: ${LLVM_TAG} (version ${LLVM_VERSION})"
+          echo "LLVM_VERSION=${LLVM_VERSION}" >> $GITHUB_ENV
+
+          ASSET="LLVM-${LLVM_VERSION}-Linux-X64.tar.xz"
+          URL="https://github.com/llvm/llvm-project/releases/download/${LLVM_TAG}/${ASSET}"
+          if ! wget -q "$URL"; then
+            echo "::error::Failed to download ${URL} - ${LLVM_TAG} may not publish a Linux-X64 tarball under the expected name. Check https://github.com/llvm/llvm-project/releases/tag/${LLVM_TAG} for the actual asset name."
+            exit 1
+          fi
+
+          mkdir llvm
+          tar -xf "${ASSET}" -C llvm --strip-components=1
+
+      - name: Configure ccache dir and key
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_ingres" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
+            CCACHE_REAL_KEY=${CCACHE_KEY}-Droidspaces${KERNEL_SOURCE_TAG}
+          else
+            CCACHE_REAL_KEY=${CCACHE_KEY}-none${KERNEL_SOURCE_TAG}
+          fi
+          echo "CCACHE_REAL_KEY=$CCACHE_REAL_KEY" >> $GITHUB_ENV
+
+      - name: Purge old ccache (on refresh)
+        if: ${{ inputs.ccache_update }}
+        continue-on-error: true
+        run: |
+          echo "Deleting old repo ccache to force a fresh save..."
+          gh cache delete "${CCACHE_REAL_KEY}-${{ runner.os }}-${KERNEL_BRANCH}" -R ${{ github.repository }} || echo "No old ccache to delete"
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        id: ccache-restore
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.KERNEL_BRANCH }}
+          restore-keys: |
+            ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-
+            ${{ env.CCACHE_REAL_KEY }}-
+
+      # NOTE on step sizes: GitHub rejects the WHOLE workflow file ("Exceeded max
+      # expression length 21000") when a single run: block is longer than 21,000
+      # characters - the run then shows up with the file path as its name and zero
+      # jobs, and the Run workflow button stops working. "Compile Kernel" used to be
+      # one ~18.5K block, so KernelSU and SuSFS integration got their own steps.
+      # Keep every run: block comfortably below ~18K when adding to this file.
+      - name: Integrate KernelSU
+        env:
+          BAKASU_REF_INPUT: ${{ inputs.bakasu_ref }}
+        run: |
+          cd ${SOC}
+
+          # run_setup <url> [args...]: download a setup.sh first, then run it. A bare
+          # `curl ... | bash` runs an EMPTY script when the download fails (these steps have no
+          # pipefail), so the feature went missing silently while the build carried on.
+          run_setup() {
+            local url=$1 f
+            shift
+            f=$(mktemp)
+            curl -fLSs --retry 3 --retry-delay 5 -o "$f" "$url" || { echo "::error::could not download ${url}"; exit 1; }
+            bash "$f" "$@"
+            rm -f "$f"
+          }
+
+          # ---- BakaSU / ReSukiSU (the same project) ----------------------------
+          # ReSukiSU was renamed to BakaSU on 5 Oct 2026 and the old repo URL now
+          # redirects to Baka-SU/BakaSU, so both options below share this helper.
+          #
+          # Since 10 Oct 2026 BakaSU main hard-stops every susfs build ($(error Please
+          # wait susfs update.) in kernel/tools/susfs_compat.mk) until it is re-synced
+          # with susfs4ksu. That re-sync is developed on a dev branch first
+          # ($BAKASU_DEV_BRANCH: sync-susfs, 14 Oct, together with simonpunk's 12-15 Oct
+          # susfs4ksu updates). The stop is never patched out here; instead:
+          #   bakasu_ref empty -> the first of main, $BAKASU_DEV_BRANCH, $BAKASU_KNOWN_GOOD
+          #                       that does not stop susfs builds (susfs off: main). A dev
+          #                       branch that has been merged and deleted is skipped, so
+          #                       this returns to main by itself.
+          #   bakasu_ref set   -> exactly that tag/branch/commit; fails within seconds if
+          #                       it is blocked.
+          bakasu_susfs_blocked() {
+            # Evaluate BakaSU's own susfs gate the way Kbuild does (kernel/Kbuild
+            # includes it when CONFIG_KSU_SUSFS=y). Returns 0 (= blocked) if it
+            # hard-stops, after printing BakaSU's own message; 1 if it passes or
+            # the ref predates the gate.
+            local gate="${PWD}/KernelSU/kernel/tools/susfs_compat.mk" probe rc=0
+            [[ -f "$gate" ]] || return 1
+            probe="$(mktemp -d)"
+            printf 'srctree := %s\nREPO_NAME := BakaSU\ninclude %s\nprobe:\n\t@:\n' "$PWD" "$gate" > "${probe}/probe.mk"
+            make -s -f "${probe}/probe.mk" probe > "${probe}/out.txt" 2>&1 || rc=$?
+            [[ $rc -eq 0 ]] || sed '/^grep: /d; s/^/    | /' "${probe}/out.txt"
+            rm -rf "$probe"
+            [[ $rc -ne 0 ]]
+          }
+
+          # Check out <ref> in KernelSU/ and confirm HEAD really is that ref (setup.sh
+          # swallows a failed checkout and carries on with main). Returns 1 if it is not there.
+          bakasu_checkout() {
+            local exp
+            git -C KernelSU checkout -q "$1" 2>/dev/null || return 1
+            exp=$(git -C KernelSU rev-parse --verify --quiet "$1^{commit}") || return 1
+            [[ "$(git -C KernelSU rev-parse HEAD)" == "$exp" ]]
+          }
+
+          setup_bakasu() {
+            local req="${BAKASU_REF_INPUT:-}" cand used=""
+            run_setup "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" "${req:-main}"
+
+            if [[ -n "$req" ]]; then
+              bakasu_checkout "$req" || { echo "::error::bakasu_ref '${req}' could not be checked out - use a tag, branch or commit SHA that exists on Baka-SU/BakaSU."; exit 1; }
+              if [[ "${{ env.FEAT_SUSFS }}" == true ]] && bakasu_susfs_blocked; then
+                echo "::error::BakaSU ${req} hard-stops susfs builds in kernel/tools/susfs_compat.mk (BakaSU's message is printed above). Leave bakasu_ref empty for the automatic choice, or untick susfs."
+                exit 1
+              fi
+              used="$req"
+            else
+              for cand in main "${BAKASU_DEV_BRANCH:-}" "${BAKASU_KNOWN_GOOD}"; do
+                [[ -n "$cand" ]] || continue
+                if ! bakasu_checkout "$cand"; then
+                  echo "==> BakaSU: ${cand} does not exist (any more) - skipping it"
+                  continue
+                fi
+                if [[ "${{ env.FEAT_SUSFS }}" != true ]] || ! bakasu_susfs_blocked; then
+                  used="$cand"
+                  break
+                fi
+                echo "::warning::BakaSU ${cand} ($(git -C KernelSU rev-parse --short=8 HEAD)) hard-stops susfs builds (BakaSU's message is printed above) - trying the next candidate."
+              done
+              [[ -n "$used" ]] || { echo "::error::every BakaSU candidate (main, ${BAKASU_DEV_BRANCH:-no dev branch}, ${BAKASU_KNOWN_GOOD:0:8}) stops susfs builds - BAKASU_DEV_BRANCH / BAKASU_KNOWN_GOOD in the job env need updating."; exit 1; }
+            fi
+
+            BAKASU_COMMIT=$(git -C KernelSU rev-parse --short=8 HEAD)
+            # A branch name (main / the dev branch) lets the manager step fetch the manager built
+            # from the same branch; a tag or commit leaves it empty (manager from main).
+            BAKASU_BRANCH=""
+            git -C KernelSU show-ref --verify --quiet "refs/remotes/origin/${used}" && BAKASU_BRANCH="$used"
+            echo "BAKASU_COMMIT=${BAKASU_COMMIT}" >> "$GITHUB_ENV"
+            echo "BAKASU_BRANCH=${BAKASU_BRANCH}" >> "$GITHUB_ENV"
+            echo "==> BakaSU: building ${used} (${BAKASU_COMMIT})"
+          }
+
+          case "${{ env.FEAT_KSU_TYPE }}" in
+
+            "None")
+              ;;
+
+            "Official-KernelSU")
+              run_setup "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" main
+              ;;
+
+            "KowSU")
+              run_setup "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" master
+              ;;
+
+            "KernelSU-Next")
+              if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
+                run_setup "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" dev-susfs
+              else
+                run_setup "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" dev
+              fi
+              ;;
+
+            "ReSukiSU"|"BakaSU")
+              setup_bakasu
+              ;;
+
+            "SukiSUUltra")
+              run_setup "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" builtin
+              ;;
+          esac
+
+      - name: Integrate SuSFS
+        run: |
+          cd ${SOC}
+
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
+            # Shallow clone when just tracking the branch tip (the common
+            # case); only pay for full history when pinning to a specific
+            # older commit, since checking that commit out needs it.
+            if [[ -n "${{ inputs.susfs_commit }}" ]]; then
+              git clone -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              cd susfs
+              echo "==> SUSFS: pinning to custom commit ${{ inputs.susfs_commit }}"
+              git checkout "${{ inputs.susfs_commit }}"
+            else
+              git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              cd susfs
+              echo "==> SUSFS: using latest commit on branch gki-android12-5.10"
+            fi
+
+            SUSFS_COMMIT=$(git rev-parse --short HEAD)
+            echo "SUSFS_COMMIT=${SUSFS_COMMIT}" >> $GITHUB_ENV
+            echo "==> SUSFS: checked out commit ${SUSFS_COMMIT}"
+            cp ./kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ..
+            cp ./kernel_patches/fs/* ../fs/
+            cp ./kernel_patches/include/linux/* ../include/linux/
+
+            # Fix: susfs.c calls security_* helpers without directly
+            # including linux/security.h (relies on a transitive include
+            # that doesn't always survive on this kernel_source/LLVM combo).
+            # Add it explicitly to avoid implicit-declaration errors.
+            sed -i '1i #include <linux/security.h>' ../fs/susfs.c
+
+            SUSFS_VERSION_TAG=$(sed -n 's/.*SUSFS_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' kernel_patches/include/linux/susfs.h | head -n1)
+            echo "SUSFS_VERSION_TAG=${SUSFS_VERSION_TAG:-unknown}" >> $GITHUB_ENV
+            echo "==> SUSFS: detected version ${SUSFS_VERSION_TAG:-unknown} from susfs.h"
+
+            cd ..
+
+            # Always tracking the branch tip means any upstream change to
+            # this patch's context (or drift from BBG/NoMount/DroidSpaces
+            # already having touched the same fs/ files) can break
+            # application with no warning - this is the actual mechanism
+            # behind "worked yesterday, fails today after updating susfs".
+            # Fail loudly with a clear pointer instead of a bare patch(1)
+            # hunk dump, and leave any .rej files for the artifact-upload
+            # step below to pick up.
+            #
+            # fs/stat.c and fs/statfs.c: a kernel source that already carries SuSFS code there
+            # (Melt does) gets these two files' hunks skipped - during the Sept 2026
+            # SUS_KSTAT/statfs rework they drifted out of sync with such pre-patched copies and
+            # every one of them was rejected (Numbersf/Action-Build#269 for the sibling case).
+            # A clean source (Stock AOSP-AOSPA) needs them applied, or the SUS_KSTAT hooks are
+            # silently missing. Decided per file from the tree itself; the extern/wrapper
+            # fixups below run either way.
+            SUSFS_SKIP=()
+            for f in fs/stat.c fs/statfs.c; do
+              if grep -q susfs "$f"; then
+                SUSFS_SKIP+=("$f")
+                echo "==> SUSFS: ${f} already carries SuSFS code in this kernel source - skipping its hunks"
+              else
+                echo "==> SUSFS: ${f} has no SuSFS code yet - applying its hunks"
+              fi
+            done
+
+            # security/selinux/hooks.c + selinuxfs.c carry only susfs's selinux_hide hooks. Since
+            # susfs4ksu e24d172 (19 Oct 2026) they call the KernelSU driver's my_setprocattr /
+            # my_write_context / my_write_access, which must be non-static there. KernelSU-Next
+            # dev-susfs exports them; BakaSU keeps them static and, once it sees these hooks in
+            # hooks.c, compiles them out (susfs mode) - undefined symbols at the vmlinux link.
+            # Without the hooks BakaSU runs selinux_hide itself (its own documented fallback:
+            # "selinux_hide still working, but it will handle in BakaSU instead of susfs").
+            SELINUX_HIDE_MISSING=()
+            for fn in $(grep -oE '\bmy_(setprocattr|write_context|write_access)\b' 50_add_susfs_in_gki-android12-5.10.patch | sort -u); do
+              grep -rhsE "^[a-z_][a-z0-9_ *]*\b${fn}[[:space:]]*\(" drivers/kernelsu/ \
+                | grep -vqE '^static|;[[:space:]]*$' || SELINUX_HIDE_MISSING+=("$fn")
+            done
+            if [[ ${#SELINUX_HIDE_MISSING[@]} -gt 0 ]]; then
+              SUSFS_SKIP+=(security/selinux/hooks.c security/selinux/selinuxfs.c)
+              echo "==> SUSFS: ${{ env.FEAT_KSU_TYPE }} does not export ${SELINUX_HIDE_MISSING[*]} - skipping susfs's selinux_hide hooks (hooks.c, selinuxfs.c); ${{ env.FEAT_KSU_TYPE }} handles selinux_hide itself"
+            fi
+            FD_ARGS=()
+            for f in "${SUSFS_SKIP[@]}"; do FD_ARGS+=(-x "*${f}"); done
+            filterdiff "${FD_ARGS[@]}" 50_add_susfs_in_gki-android12-5.10.patch \
+              > 50_add_susfs_in_gki-android12-5.10.filtered.patch
+
+            if [[ ! -s 50_add_susfs_in_gki-android12-5.10.filtered.patch ]]; then
+              echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook."
+              exit 1
+            fi
+
+            for f in "${SUSFS_SKIP[@]}"; do
+              if grep -qE "^\+\+\+ .*/${f//./\\.}([[:space:]]|\$)" 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+                echo "::error::${f} hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust them."
+                exit 1
+              fi
+            done
+
+            # -N (--forward): still worth keeping for any other overlap
+            # (e.g. BBG/NoMount/DroidSpaces touching the same fs/ files) -
+            # this only ever silently skips a hunk that's genuinely already
+            # applied; anything that doesn't match still fails loudly below.
+            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (skipped files, if any: ${SUSFS_SKIP[*]:-none} - see the stat.c/statfs.c note above). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
+              exit 1
+            fi
+
+            # Fix: once the SuSFS patch has applied cleanly, patch the
+            # missing extern declarations directly into fs/stat.c and
+            # fs/statfs.c in place (see susfs_commit description above) -
+            # generated here instead of kept as separately-committed
+            # "golden" files in this repo, so there is nothing extra to
+            # remember to commit or keep in sync as susfs4ksu's ongoing
+            # rework keeps moving. Each fix only fires if the symbol is
+            # referenced and not already declared, so this is a no-op
+            # once upstream fixes it on their end.
+            SUSFS_EXTERN_FIXES=(
+              "fs/stat.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/stat.c:susfs_is_current_proc_no_su:CONFIG_KSU_SUSFS"
+              "fs/statfs.c:susfs_is_current_app_uid:CONFIG_KSU_SUSFS_SUS_KSTAT"
+              "fs/statfs.c:susfs_is_current_proc_umounted:CONFIG_KSU_SUSFS_SUS_MOUNT"
+            )
+
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} already declared"
+                continue
+              fi
+              if ! grep -qE "${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "[skip] ${fx_file}: ${fx_func} not referenced, nothing to fix"
+                continue
+              fi
+              fx_lastinc=$(grep -n '^#include' "$fx_file" | tail -1 | cut -d: -f1)
+              if [[ -z "$fx_lastinc" ]]; then
+                echo "::error::no #include lines found in ${fx_file} - cannot find a safe insertion point. susfs4ksu file structure has likely changed more than this fixup accounts for."
+                exit 1
+              fi
+              {
+                echo "#ifdef ${fx_guard}"
+                echo "extern bool ${fx_func}(void);"
+                echo "#endif"
+              } > /tmp/_susfs_extern_block.txt
+              sed -i "${fx_lastinc}r /tmp/_susfs_extern_block.txt" "$fx_file"
+              echo "[fixed] ${fx_file}: added extern for ${fx_func}"
+            done
+
+            # Self-check: fail loudly instead of silently proceeding broken.
+            for fx_spec in "${SUSFS_EXTERN_FIXES[@]}"; do
+              IFS=: read -r fx_file fx_func fx_guard <<< "$fx_spec"
+              if grep -qE "${fx_func}[[:space:]]*\(" "$fx_file" && ! grep -qE "extern[^;]*${fx_func}[[:space:]]*\(" "$fx_file"; then
+                echo "::error::${fx_file} still calls ${fx_func}() with no extern declaration after the fixup"
+                exit 1
+              fi
+            done
+            echo "susfs stat.c/statfs.c extern check: OK"
+
+            # Fix (susfs4ksu 5a3af83, 19 Oct 2026+): fs/exec.c now calls official KernelSU's
+            # module-preinit API (ksu_setup_preinit_file / ksu_preinit_handle_post_execveat)
+            # unless KSU_NO_PREINIT is defined. A KernelSU without that feature (BakaSU so far)
+            # compiles fine but fails at the final vmlinux link with undefined references, so
+            # set the switch susfs provides for exactly this case - only when the integrated
+            # driver lacks the API, so a KernelSU that has it keeps preinit working.
+            if grep -rqs 'ksu_setup_preinit_file' drivers/kernelsu/; then
+              echo "==> SUSFS: this KernelSU provides module preinit - leaving its fs/exec.c hooks on"
+            else
+              for f in $(grep -rlE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' fs kernel mm security include 2>/dev/null); do
+                ln=$(grep -nE '^#[[:space:]]*ifn?def KSU_NO_PREINIT' "$f" | head -1 | cut -d: -f1)
+                sed -i "${ln}i #define KSU_NO_PREINIT /* ${{ env.FEAT_KSU_TYPE }} has no module-preinit API (set by build workflow) */" "$f"
+                echo "[fixed] ${f}: defined KSU_NO_PREINIT (${{ env.FEAT_KSU_TYPE }} has no ksu_setup_preinit_file)"
+              done
+            fi
+
+            # Fix: same SUS_KSTAT/statfs rework as the extern fixup above,
+            # one step further along. susfs.c (susfs_mark_inode_sus_kstat)
+            # now calls two non-static wrapper functions around fs/statfs.c's
+            # own static statfs_by_dentry()/calculate_f_flags() - neither
+            # wrapper is defined yet in kernel_patches/fs/statfs.c or in
+            # this patch's (excluded) hunks for that file, so susfs.c
+            # compiles cleanly (it already has a visible prototype for
+            # both, presumably from include/linux/susfs.h) and this only
+            # surfaces as "undefined symbol" at the final vmlinux link.
+            # Both wrapped functions are stock, unmodified fs/statfs.c
+            # internals with a stable signature well predating this fork,
+            # so a thin forwarding wrapper next to them is safe. Guarded
+            # the same way as the fixup above - a no-op once susfs4ksu
+            # ships the wrappers itself.
+            SUSFS_MISSING_WRAPPERS=()
+            for fx_wrapper in statfs_by_dentry_wrapper calculate_f_flags_wrapper; do
+              if ! grep -q "${fx_wrapper}" fs/statfs.c; then
+                SUSFS_MISSING_WRAPPERS+=("$fx_wrapper")
+              fi
+            done
+
+            if [[ ${#SUSFS_MISSING_WRAPPERS[@]} -gt 0 ]]; then
+              if ! grep -qE '^static int statfs_by_dentry\(' fs/statfs.c || ! grep -qE '^static int calculate_f_flags\(' fs/statfs.c; then
+                echo "::error::statfs_by_dentry()/calculate_f_flags() not found in fs/statfs.c in the expected static-function form - susfs4ksu's rework has moved further than this fixup accounts for. Missing wrappers: ${SUSFS_MISSING_WRAPPERS[*]}"
+                exit 1
+              fi
+              {
+                echo ""
+                echo "int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf) { return statfs_by_dentry(dentry, buf); }"
+                echo "int calculate_f_flags_wrapper(struct vfsmount *mnt) { return calculate_f_flags(mnt); }"
+              } >> fs/statfs.c
+              echo "[fixed] fs/statfs.c: added ${SUSFS_MISSING_WRAPPERS[*]}"
+            fi
+
+            echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+          fi
+
+      - name: Compile Kernel
+        run: |
+          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
+          export PATH="${CLANG_ROOT}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="${CLANG_ROOT}/clang"
+          export CXX="${CLANG_ROOT}/clang++"
+          export HOSTCC="${CLANG_ROOT}/clang"
+          export HOSTCXX="${CLANG_ROOT}/clang++"
+          export LD="${CLANG_ROOT}/ld.lld"
+          export AR="${CLANG_ROOT}/llvm-ar"
+          export NM="${CLANG_ROOT}/llvm-nm"
+          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
+          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
+          export STRIP="${CLANG_ROOT}/llvm-strip"
+          export KBUILD_BUILD_USER="KingD2N"
+          export KBUILD_BUILD_HOST="Ingres"
+
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_NOHARDLINK="true"
+          mkdir -p "${CCACHE_DIR}"
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "${CCACHE_DIR}/ccache.conf"
+          ccache -M "${CCACHE_MAXSIZE}"
+          ccache -o compression=true
+          echo "ccache status before build:"
+          ccache -s
+
+          case "${{ inputs.custom_name }}" in
+            auto) KERNEL_NAME="${KERNEL_AUTO_NAME}" ;;
+            "")   KERNEL_NAME="${{ env.FEAT_KSU_TYPE }}" ;;
+            *)    KERNEL_NAME="${{ inputs.custom_name }}" ;;
+          esac
+
+          echo "KERNEL_NAME=${KERNEL_NAME}" >> $GITHUB_ENV
+
+          cd ${SOC}
+
+          # run_setup <url> [args...]: download first, then run - see the same helper in
+          # "Integrate KernelSU" (a failed download must stop the build, not drop a feature).
+          run_setup() {
+            local url=$1 f
+            shift
+            f=$(mktemp)
+            curl -fLSs --retry 3 --retry-delay 5 -o "$f" "$url" || { echo "::error::could not download ${url}"; exit 1; }
+            bash "$f" "$@"
+            rm -f "$f"
+          }
+
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
+            echo "::group::NoMount integration"
+            if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
+              echo "::warning::susfs and nomount are both enabled - susfs's SUS_KSTAT patches fs/stat.c, which nomount's own VFS hooks may also touch. If anything below fails, try disabling one to isolate it."
+            fi
+
+            NOMOUNT_COMMIT=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/master | cut -f1 | cut -c1-7)
+            if [[ -z "$NOMOUNT_COMMIT" ]]; then
+              echo "::warning::Could not resolve maxsteeel/nomount's master branch HEAD via git ls-remote - continuing anyway, but the release notes won't show a commit hash for this run."
+              NOMOUNT_COMMIT="unknown"
+            fi
+            echo "NOMOUNT_COMMIT=${NOMOUNT_COMMIT}" >> $GITHUB_ENV
+            echo "==> NoMount: using maxsteeel/nomount@master (${NOMOUNT_COMMIT})"
+
+            run_setup "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh" master
+            echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "::endgroup::"
+          fi
+
+          if [[ "${{ env.FEAT_BBG }}" == true ]]; then
+            run_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh"
+            echo "CONFIG_BBG=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+            # A full defconfig (Avalon) sets CONFIG_LSM itself, overriding the Kconfig default
+            # above - BBG's Makefile then stops the build. gki_defconfig has no such line.
+            sed -i '/^CONFIG_LSM=/{ /baseband_guard/! s/selinux/selinux,baseband_guard/ }' arch/arm64/configs/${KERNEL_DEFCONFIG}
+          fi
+
+          if [[ "${{ env.FEAT_REKERNEL_NETLINK }}" == true ]]; then
+            git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
+            bash rekernel-src/Integrate/patches.sh
+            echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+          fi
+
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
+
+            echo "CONFIG_BPF_SYSCALL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_BPF_JIT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_CGROUP_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_BPF_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KPROBES=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_UPROBE_EVENTS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_CLS_ACT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_CLS_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_ACT_BPF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_NET_SCH_INGRESS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO_BTF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "CONFIG_DEBUG_INFO_BTF_MODULES=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            echo "==> Re-Kernel eBPF selected; will build after the kernel Image is ready."
+          fi
+
+          DROIDSPACES_CONFIG=""
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
+
+            apply_droidspaces_patch() {
+              local patch_file="$1" label="$2"
+              if patch -p1 -N --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
+                patch -p1 -N --fuzz=0 < "$patch_file"
+                echo "==> DroidSpaces ${label}: applied."
+                return 0
+              elif patch -p1 -R --fuzz=0 --dry-run --silent < "$patch_file" > /dev/null 2>&1; then
+                echo "==> DroidSpaces ${label}: already present natively on this branch (confirmed via reverse-check) - not re-applying."
+                return 0
+              else
+                echo "::warning::DroidSpaces ${label} doesn't apply cleanly in either direction - can't confirm the kABI fix is actually present on this tree."
+                return 1
+              fi
+            }
+
+            DROIDSPACES_SAFE=true
+
+            curl -sLo patch-for-below-6.12.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
+            apply_droidspaces_patch patch-for-below-6.12.patch "patch 001 (sysvipc kabi fix)" || DROIDSPACES_SAFE=false
+
+            curl -sLo patch-for-5.10-or-lower.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
+            apply_droidspaces_patch patch-for-5.10-or-lower.patch "patch 002 (posix_mqueue abi padding)" || DROIDSPACES_SAFE=false
+
+            if [[ "$DROIDSPACES_SAFE" == true ]]; then
+              if [[ -f "${GITHUB_WORKSPACE}/configs/droidspaces-gki.config" ]]; then
+                cp ${GITHUB_WORKSPACE}/configs/droidspaces-gki.config arch/arm64/configs/vendor/droidspaces.config
+                DROIDSPACES_CONFIG="vendor/droidspaces.config"
+              else
+                echo "::warning::configs/droidspaces-gki.config not found in this repo's root - DroidSpaces config fragment not applied (nothing to enable it with). Add that file to the repo (see ravindu644/Droidspaces-OSS 'Configuring GKI Kernels' docs) to actually turn DroidSpaces on."
+              fi
+            else
+              echo "::warning::Skipping the DroidSpaces config fragment entirely this run - at least one required kABI patch could not be confirmed. Enabling CONFIG_SYSVIPC/CONFIG_IPC_NS/CONFIG_POSIX_MQUEUE without it risks a bootloop per DroidSpaces-OSS's own docs, so this run won't have working DroidSpaces support."
+            fi
+          fi
+
+          echo "-${KERNEL_NAME}-${{ github.actor }}" > .scmversion
+
+          echo "CONFIG_TMPFS_XATTR=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+
+          # Stock HyperOS: kingD2NN/Pzqqt-Melt-Rebase is Pzqqt's Melt for marble and has no ingres
+          # fragments, so the ingres HyperOS ones (from kingD2N/kernel_source_Melt_xiaomi_ingres
+          # MIUI_HOS, kept in configs/hyperos/) are added. Fragments the tree already has win.
+          # Their debugfs.config keeps CONFIG_DEBUG_FS=y, which stock vendor modules need.
+          if [[ "${KERNEL_CONFIG_SET}" == hyperos ]]; then
+            for f in xiaomi_GKI ingres_GKI debugfs; do
+              if [[ -f "arch/arm64/configs/vendor/${f}.config" ]]; then
+                echo "==> HyperOS config: vendor/${f}.config from the kernel source"
+              else
+                cp "${GITHUB_WORKSPACE}/configs/hyperos/${f}.config" "arch/arm64/configs/vendor/${f}.config"
+                echo "==> HyperOS config: vendor/${f}.config from configs/hyperos/"
+              fi
+            done
+          fi
+
+          # Melt / Stock AOSP-AOSPA / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
+          make O=out ${KERNEL_DEFCONFIG} ${KERNEL_CONFIG_FRAGMENTS} ${DROIDSPACES_CONFIG}
+
+          echo "::group::Sanity-check defconfig (savedefconfig)"
+
+          make O=out savedefconfig
+          cp out/defconfig "${GITHUB_WORKSPACE}/resolved_defconfig.txt"
+
+          echo "--- Cek symbol kunci ingres / tuning gaming tetap ke-resolve ---"
+          # Read from out/.config, not out/defconfig: savedefconfig drops every
+          # symbol that sits at its Kconfig default, and CONFIG_BBG / CONFIG_NOMOUNT /
+          # CONFIG_REKERNEL are all "default y" - they used to be reported as missing
+          # while being enabled and compiled in.
+          for cfg in \
+            CONFIG_ARCH_QCOM \
+            CONFIG_ARCH_WAIPIO \
+            CONFIG_SCHED_WALT \
+            CONFIG_QCOM_KGSL \
+            CONFIG_BINDER_PRIO \
+            CONFIG_MQ_IOSCHED_KYBER \
+            CONFIG_MQ_IOSCHED_DEADLINE \
+            CONFIG_HZ_500 \
+            CONFIG_KSU_SUSFS \
+            CONFIG_BBG \
+            CONFIG_REKERNEL \
+            CONFIG_NOMOUNT \
+          ; do
+            hit=$(grep "^${cfg}=" out/.config || true)
+            if [[ -n "$hit" ]]; then
+              echo "✅ ${hit}"
+            else
+              echo "⚠️  ${cfg} tidak ada di hasil resolve (dependency belum kepenuhi, atau symbol memang gak ada di tree ini - cek manual kalau ini config yang kamu harap ada)"
+            fi
+          done
+          echo "::endgroup::"
+
+          make -j$(nproc) O=out CC="ccache ${CLANG_ROOT}/clang" HOSTCC="ccache ${CLANG_ROOT}/clang" Image
+
+          echo "ccache status after build:"
+          ccache -s
+
+      - name: Save ccache
+        if: ${{ always() && steps.ccache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ env.KERNEL_BRANCH }}
+
+      - name: Upload resolved defconfig (debug artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: resolved-defconfig-${{ env.FEAT_KSU_TYPE }}
+          path: resolved_defconfig.txt
+          if-no-files-found: warn
+
+      - name: Upload SuSFS patch rejects (debug artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: susfs-patch-rejects-${{ env.FEAT_KSU_TYPE }}
+          path: ${{ env.SOC }}/**/*.rej
+          if-no-files-found: ignore
+
+      - name: Build Re-Kernel (eBPF)
+        if: ${{ env.FEAT_REKERNEL_EBPF == 'true' }}
+        run: |
+          set -e
+
+          mkdir -p rekernel-ebpf-build
+          cd rekernel-ebpf-build
+
+          curl -sSL -o bpftool.tar.gz \
+            https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-amd64.tar.gz
+          mkdir -p bpftool-bin
+          tar -xzf bpftool.tar.gz -C bpftool-bin
+          chmod +x bpftool-bin/bpftool
+
+          wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q android-ndk-r27d-linux.zip
+
+          # ---- Fetch only the eBPF-Source subfolder from Re-Kernel ----
+          git clone --depth=1 --recurse-submodules --shallow-submodules --filter=blob:none --sparse \
+            https://github.com/Sakion-Team/Re-Kernel.git rekernel-ebpf-src
+          cd rekernel-ebpf-src
+          git sparse-checkout set eBPF-Source
+          cd eBPF-Source
+
+          "${GITHUB_WORKSPACE}/rekernel-ebpf-build/bpftool-bin/bpftool" btf dump file \
+            "${GITHUB_WORKSPACE}/${SOC}/out/vmlinux" format c > include/vmlinux.h
+
+          NDK_PATH="${GITHUB_WORKSPACE}/rekernel-ebpf-build/android-ndk-r27d"
+
+          if ! make ARCH=aarch64 API=35 NDK_PATH="${NDK_PATH}"; then
+            echo "::warning::Re-Kernel eBPF build failed with plain vmlinux.h — retrying with EXTRA_BPF_CFLAGS=-DRK_DEFINE_BINDER_TYPES (binder structs may be missing from our BTF dump)."
+            make clean
+            make ARCH=aarch64 API=35 NDK_PATH="${NDK_PATH}" EXTRA_BPF_CFLAGS=-DRK_DEFINE_BINDER_TYPES
+          fi
+
+          mkdir -p "${GITHUB_WORKSPACE}/rekernel-ebpf-out"
+          cp out/rekernel.bpf.o "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
+          cp out/rekerneld_aarch64 "${GITHUB_WORKSPACE}/rekernel-ebpf-out/"
+
+      # BakaSU / ReSukiSU: attach the newest manager APK - the latest successful build-manager run of
+      # the branch the kernel was built from (main or BAKASU_DEV_BRANCH; else main), via nightly.link
+      # (the link BakaSU's own README uses). Attached only if its MINIMAL_SUPPORTED_KERNEL (Natives.kt)
+      # covers this kernel's version code. Never fails the build: problems are warnings.
+      - name: Fetch BakaSU manager
+        if: ${{ env.FEAT_KSU_TYPE == 'BakaSU' || env.FEAT_KSU_TYPE == 'ReSukiSU' }}
+        run: |
+          set -o pipefail
+          K="${GITHUB_WORKSPACE}/${SOC}/KernelSU"
+          D="${GITHUB_WORKSPACE}/bakasu-manager"
+          rm -rf "$D" && mkdir -p "$D/out"
+          # Manager built from the same branch as the kernel (BAKASU_BRANCH from "Integrate KernelSU"),
+          # else main's.
+          MBRANCH=""
+          for b in ${BAKASU_BRANCH:-} main; do
+            URL="https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/${b}/Manager-release.zip"
+            if curl -fsSL --retry 3 --retry-delay 5 -o "$D/m.zip" "$URL" && unzip -q -o "$D/m.zip" -d "$D/x"; then
+              MBRANCH="$b"
+              break
+            fi
+            rm -rf "$D/m.zip" "$D/x"
+            echo "::warning::could not fetch the BakaSU manager from ${URL}"
+          done
+          [[ -n "$MBRANCH" ]] || { echo "::warning::no BakaSU manager could be fetched - the release goes out without it"; exit 0; }
+          APK=$(find "$D/x" -name '*.apk' | sort | head -1)
+          [[ -n "$APK" ]] || { echo "::warning::Manager-release.zip contains no APK - the release goes out without it"; exit 0; }
+          # BakaSU_<tag>_<versionCode>-release.apk (archivesName in manager/app/build.gradle.kts)
+          MGR_CODE=$(basename "$APK" | sed -n 's/.*_\([0-9]\{5,\}\)\(-[A-Za-z]*\)\{0,1\}\.apk$/\1/p')
+
+          # Kernel version code exactly as kernel/Kbuild computes it: <base> + commit count + <offset>.
+          KER_CODE=""
+          read -r V_BASE V_OFF < <(sed -n 's/^KSU_VERSION := $(shell expr \([0-9]*\) + $(KSU_LOCAL_VERSION) + \([0-9]*\))$/\1 \2/p' "$K/kernel/Kbuild") || true
+          if [[ -n "${V_BASE:-}" && -n "${V_OFF:-}" ]]; then
+            KER_CODE=$(( V_BASE + $(git -C "$K" rev-list --count HEAD) + V_OFF ))
+          fi
+          MIN=$(git -C "$K" grep -h 'const val MINIMAL_SUPPORTED_KERNEL' "origin/${MBRANCH}" -- manager 2>/dev/null | grep -o '[0-9]\+' | head -1 || true)
+          echo "==> BakaSU manager ${MGR_CODE:-?} (needs kernel >= ${MIN:-?}); this kernel: ${KER_CODE:-?} (BakaSU ${BAKASU_COMMIT:-?})"
+
+          if [[ -n "$KER_CODE" && -n "$MIN" ]] && (( KER_CODE < MIN )); then
+            echo "::warning::the newest BakaSU manager needs kernel version >= ${MIN}, this kernel is ${KER_CODE} - not attaching it. Use the manager from the BakaSU build of commit ${BAKASU_COMMIT:-?}."
+            exit 0
+          fi
+          if [[ -z "$KER_CODE" || -z "$MIN" ]]; then
+            echo "::warning::could not read the kernel version code or the manager's minimum - attaching the manager without the compatibility check"
+          fi
+          cp "$APK" "$D/out/"
+          echo "BAKASU_MANAGER_APK=bakasu-manager/out/$(basename "$APK")" >> "$GITHUB_ENV"
+          echo "BAKASU_MANAGER_INFO=manager ${MGR_CODE:-?} (latest Baka-SU/BakaSU ${MBRANCH} build), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
+
+      - name: Make AnyKernel3
+        run: |
+          ZIP_NAME="${KERNEL_NAME}_${{ env.FEAT_KSU_TYPE }}"
+
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
+            ZIP_NAME="${ZIP_NAME}_SuSFS"
+          fi
+
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
+            ZIP_NAME="${ZIP_NAME}_NoMount"
+          fi
+
+          ZIP_NAME="${ZIP_NAME}_$(date -u +"%Y%m%d_%H%M")"
+          git clone --recurse-submodules https://github.com/kingD2N/AnyKernel3.git
+
+          cp ${SOC}/out/arch/arm64/boot/Image AnyKernel3/Image
+          cp ${SOC}/out/arch/arm64/boot/Image ./Image
+          cd AnyKernel3
+
+          zip -r9 ../"${ZIP_NAME}.zip" * -x .git
+
+      - name: Create GitHub Release
+        run: |
+          BUILD_TIME=$(date -u +"%Y%m%d_%H%M")
+          REL_NAME="${KERNEL_NAME}-${BUILD_TIME}"
+          echo "REL_NAME=${REL_NAME}" >> $GITHUB_ENV
+          cd ${GITHUB_WORKSPACE}
+          ZIP_FILE=$(ls *.zip)
+
+          # BAKASU_COMMIT is only set (via GITHUB_ENV) for the BakaSU / ReSukiSU options.
+          ksu_label="${{ env.FEAT_KSU_TYPE }}"
+          if [[ -n "${BAKASU_COMMIT:-}" ]]; then
+            ksu_label="${ksu_label}@${BAKASU_COMMIT}"
+          fi
+
+          ASSETS=("${ZIP_FILE}")
+          if [[ -n "${BAKASU_MANAGER_APK:-}" ]]; then
+            ASSETS+=("${BAKASU_MANAGER_APK}")
+            manager_checkbox="Attached: ${BAKASU_MANAGER_APK##*/} - ${BAKASU_MANAGER_INFO}"
+          else
+            manager_checkbox="Not attached"
+          fi
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
+            ASSETS+=("rekernel-ebpf-out/rekernel.bpf.o" "rekernel-ebpf-out/rekerneld_aarch64")
+          fi
+
+          if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
+            susfs_checkbox="Supported (susfs4ksu@${SUSFS_COMMIT})"
+          else
+            susfs_checkbox="Unsupported"
+          fi
+
+          if [[ "${{ env.FEAT_BBG }}" == true ]]; then
+            bbg_checkbox="Supported"
+          else
+            bbg_checkbox="Unsupported"
+          fi
+
+          if [[ "${{ env.FEAT_REKERNEL_NETLINK }}" == true ]]; then
+            rekernel_netlink_checkbox="Supported"
+          else
+            rekernel_netlink_checkbox="Unsupported"
+          fi
+
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]]; then
+            rekernel_ebpf_checkbox="Supported (daemon+prog attached as release assets)"
+          else
+            rekernel_ebpf_checkbox="Unsupported"
+          fi
+
+          if [[ "${{ env.FEAT_DROIDSPACES }}" == true ]]; then
+            droidspaces_checkbox="Supported"
+          else
+            droidspaces_checkbox="Unsupported"
+          fi
+
+          if [[ "${{ env.FEAT_NOMOUNT }}" == true ]]; then
+            nomount_checkbox="Supported (maxsteeel/nomount@master@${NOMOUNT_COMMIT})"
+          else
+            nomount_checkbox="Unsupported"
+          fi
+
+          cat > release_notes.md << NOTES_EOF
+          #
+
+          <img width="512" height="279" alt="image_0c69b253-1d7c-4fda-9f53-08ba18f46a10" src="https://github.com/user-attachments/assets/ba10704d-00c8-45d1-bde0-bd8bdb3618d2" />
+
+          | | |
+          |:---|:---|
+          | 📱 Device | POCO F4 GT (ingres) • Redmi K50G (ingres) |
+          | 🟠 ROM Support | ${KERNEL_ROM_SUPPORT} |
+          | 🖥️ Kernel Name | ${KERNEL_NAME} |
+          | 🧬 Kernel Base | ${KERNEL_BASE} |
+          | 🛠️ Build Scope | ZIP |
+          | 📦 Source | ${KERNEL_SOURCE_URL} |
+          | ⚔️ Kernel branch | ${KERNEL_BRANCH} |
+          | 💻 KSU Manager type | ${ksu_label} |
+          | 📲 Manager APK | ${manager_checkbox} |
+          | 🔧 SuSFS Version | ${susfs_checkbox} |
+          | ⚙️ BBG Patch | ${bbg_checkbox} |
+          | ⚙️ Re-Kernel (Netlink) | ${rekernel_netlink_checkbox} |
+          | ⚙️ Re-Kernel (eBPF) | ${rekernel_ebpf_checkbox} |
+          | 🧩 DroidSpaces | ${droidspaces_checkbox} |
+          | 🗂️ NoMount | ${nomount_checkbox} |
+          | 🔨 Compiler | LLVM/Clang ${LLVM_VERSION} Official |
+
+          ---
+          NOTES_EOF
+
+          gh release create "$REL_NAME" --title "$REL_NAME" --notes-file release_notes.md "${ASSETS[@]}"
