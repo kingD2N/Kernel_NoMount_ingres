@@ -701,6 +701,17 @@ jobs:
               echo "[fixed] fs/statfs.c: added ${SUSFS_MISSING_WRAPPERS[*]}"
             fi
 
+            # Fix (susfs4ksu b0e4746, v2.3.0, Nov 2026): fs/susfs.c gained static helpers
+            # (susfs_switch_to_ksu_domain / susfs_restore_creds) whose only callers sit behind
+            # options this build doesn't enable. sm8450 builds with -Werror, so the
+            # -Wunused-function warning stops fs/susfs.o. An unused static function is simply
+            # dropped by the compiler, so relax that one warning for this one object only
+            # (every other file keeps -Werror). No-op if already present.
+            if [[ -f fs/Makefile ]] && ! grep -q 'CFLAGS_susfs.o' fs/Makefile; then
+              echo 'CFLAGS_susfs.o += -Wno-unused-function' >> fs/Makefile
+              echo "[fixed] fs/Makefile: fs/susfs.o built with -Wno-unused-function (unused static helpers in susfs ${SUSFS_COMMIT})"
+            fi
+
             echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
