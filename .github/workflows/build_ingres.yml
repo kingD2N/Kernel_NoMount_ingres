@@ -865,6 +865,18 @@ jobs:
             echo "CONFIG_DEBUG_INFO=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_DEBUG_INFO_BTF=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_DEBUG_INFO_BTF_MODULES=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+            # 6.x (Linux 6.6): CONFIG_DEBUG_INFO is no longer settable - it comes from the "Debug
+            # information" choice, which needs DEBUG_KERNEL (5.10 gets that through EXPERT, 6.6
+            # does not). Without it DEBUG_INFO_BTF drops out and the eBPF build finds no .BTF in
+            # vmlinux. Pick the toolchain-default DWARF and keep DEBUG_MISC off.
+            if ! grep -A1 '^config DEBUG_INFO$' lib/Kconfig.debug | grep -q 'bool "'; then
+              {
+                echo "CONFIG_DEBUG_KERNEL=y"
+                echo "CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y"
+                echo "# CONFIG_DEBUG_MISC is not set"
+              } >> arch/arm64/configs/${KERNEL_DEFCONFIG}
+              echo "==> Re-Kernel eBPF: kernel ${KERNEL_MAJMIN} takes debug info from the 'Debug information' choice - enabled DEBUG_KERNEL + toolchain-default DWARF for BTF"
+            fi
             echo "==> Re-Kernel eBPF selected; will build after the kernel Image is ready."
           fi
 
@@ -941,6 +953,12 @@ jobs:
 
           # Melt / Stock AOSP-AOSPA / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
           make O=out ${KERNEL_DEFCONFIG} ${KERNEL_CONFIG_FRAGMENTS} ${DROIDSPACES_CONFIG}
+
+          # Re-Kernel eBPF reads its types from vmlinux's BTF - stop now, not after the whole build.
+          if [[ "${{ env.FEAT_REKERNEL_EBPF }}" == true ]] && ! grep -q '^CONFIG_DEBUG_INFO_BTF=y' out/.config; then
+            echo "::error::rekernel_ebpf is ticked but CONFIG_DEBUG_INFO_BTF did not resolve on this kernel (needs DEBUG_INFO, BPF_SYSCALL and pahole) - the eBPF step would fail with 'failed to find .BTF ELF section'. Untick rekernel_ebpf or fix the config."
+            exit 1
+          fi
 
           # BakaSU reaches a few static SELinux symbols through kallsyms; without
           # CONFIG_KALLSYMS_ALL (Linux 6.6: its gki_defconfig asks for it, but DEBUG_KERNEL is off)
