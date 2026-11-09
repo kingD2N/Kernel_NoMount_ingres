@@ -1,10 +1,10 @@
-name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS / Avalon - POCO F4 GT (Ingres)
+name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS / Avalon / Linux 6.6 - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock AOSP-AOSPA (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter)"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock AOSP-AOSPA (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Linux 6.6 = kingD2N/android_kernel6_xiaomi_sm8450 (LineageOS 24, kernel 6.6)"
         required: true
         type: choice
         default: Melt
@@ -14,9 +14,10 @@ on:
           - Stock AOSP-AOSPA (Pure)
           - Stock HyperOS
           - Avalon
+          - Linux 6.6
 
       kernel_branch:
-        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA and its Pure build), Yudharn-melt-rebase (Stock HyperOS), main (Avalon). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA and its Pure build), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Linux 6.6). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -27,6 +28,8 @@ on:
           - LazyGoogle_ORI
           - melt-rebase
           - Yudharn-melt-rebase
+          - lineage-24.0
+          - lineage-22.2
 
       kernel_source_url:
         description: "Optional: any other kernel git URL - overrides kernel_source (leave empty normally)"
@@ -35,13 +38,13 @@ on:
         default: ""
 
       modules_branch:
-        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch)"
+        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch; not used by Avalon or Linux 6.6)"
         required: true
         type: string
         default: "lineage-23.2"
 
       devicetree_branch:
-        description: "Branch of Ingres-Centre/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead)"
+        description: "Branch of Ingres-Centre/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead; not used by Avalon or Linux 6.6)"
         required: true
         type: string
         default: "lineage-23.2"
@@ -67,7 +70,7 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-AOSP-AOSPA-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-AOSP-AOSPA-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Linux-6.6-KERNEL"
         required: false
         type: choice
         default: auto
@@ -80,15 +83,16 @@ on:
           - Stock-AOSP-AOSPA-PURE-KERNEL
           - Stock-HyperOS-KERNEL
           - Avalon-KERNEL
+          - Linux-6.6-KERNEL
 
       susfs:
-        description: "Add SuSFS support (built into the kernel from susfs4ksu gki-android12-5.10)"
+        description: "Add SuSFS support (built into the kernel from the susfs4ksu branch matching the kernel: gki-android12-5.10, or gki-android15-6.6 for Linux 6.6)"
         required: true
         type: boolean
         default: true
 
       susfs_commit:
-        description: "Commit SHA of susfs4ksu (gki-android12-5.10) to pin. Leave empty (default) to track the branch tip - the extern/wrapper gaps from the Sept 2026 SUS_KSTAT/statfs rework are patched automatically in the Integrate SuSFS step (no-ops once upstream fixes them). Set a short SHA only to pin or test a specific commit."
+        description: "Commit SHA of susfs4ksu (on the branch matching the kernel - see susfs) to pin. Leave empty (default) to track the branch tip - the extern/wrapper gaps from the Sept 2026 SUS_KSTAT/statfs rework are patched automatically in the Integrate SuSFS step (no-ops once upstream fixes them). Set a short SHA only to pin or test a specific commit."
         required: false
         type: string
         default: ""
@@ -210,6 +214,10 @@ jobs:
               URL=https://github.com/ruik3z/kernel-ingres; DEF=main; TAG=-avalon
               NAME=Avalon-KERNEL; ROM="Official AOSP (LineageOS 23.2 based)"; CFG=avalon
               DEFCONFIG=ingres_user_defconfig; FRAGMENTS="" ;;
+            "Linux 6.6")
+              URL=https://github.com/kingD2N/android_kernel6_xiaomi_sm8450; DEF=lineage-24.0; TAG=-k66
+              NAME=Linux-6.6-KERNEL; ROM="Official AOSP (LineageOS 24, Linux 6.6)"; CFG=k66
+              FRAGMENTS="vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config" ;;
             *)
               URL=https://github.com/kingD2N/kernel_source_Melt_xiaomi_ingres; DEF=melt-MIX; TAG=
               NAME=MIX™-KERNEL; ROM="Official AOSP"; CFG= ;;
@@ -283,6 +291,18 @@ jobs:
             sed -i '/kernelsu/d' ${SOC}/drivers/Makefile ${SOC}/drivers/Kconfig
             sed -i '/^CONFIG_KSU=/d' ${SOC}/arch/arm64/configs/${DEFCONFIG}
             echo "==> Avalon: kernel/, devicetrees/ and modules/ in place; bundled KernelSU-Next removed (ksu_type: ${{ inputs.ksu_type }})"
+          elif [[ "$CFG" == k66 ]]; then
+            # Linux 6.6: its waipio settings live in its own gki_defconfig (no
+            # vendor/waipio_GKI.config), and the LineageOS 5.10 modules / device-tree repos do not
+            # belong to a 6.6 kernel, so neither is cloned. Its bundled KernelSU-Next copy would
+            # count the kernel repo's commits as its version, so it gives way to ksu_type like
+            # Avalon's; the CONFIG_KSU* lines in its configs go too (CONFIG_KSU_SUSFS=y would put
+            # BakaSU into SuSFS hook mode even with susfs unticked) - ksu_type and susfs decide.
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
+            rm -rf ${SOC}/drivers/kernelsu ${SOC}/KernelSU-Next
+            sed -i '/kernelsu/d' ${SOC}/drivers/Makefile ${SOC}/drivers/Kconfig
+            sed -i -E '/^(# )?CONFIG_KSU/d' ${SOC}/arch/arm64/configs/${DEFCONFIG} ${SOC}/arch/arm64/configs/vendor/ingres_GKI.config
+            echo "==> Linux 6.6: bundled KernelSU-Next and its CONFIG_KSU* lines removed (ksu_type: ${{ inputs.ksu_type }}, susfs: ${{ inputs.susfs }})"
           else
             git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
             git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
@@ -303,9 +323,26 @@ jobs:
             exit 1
           fi
 
-          KERNEL_BASE="android12-${KVERSION}.${KPATCHLEVEL}.${KSUBLEVEL}"
+          # GKI generation of this kernel line: names the release's Kernel Base and the
+          # susfs4ksu branch / patch the Integrate SuSFS step uses.
+          KMAJMIN="${KVERSION}.${KPATCHLEVEL}"
+          case "$KMAJMIN" in
+            5.10) KGEN=android12 ;;
+            5.15) KGEN=android13 ;;
+            6.1)  KGEN=android14 ;;
+            6.6)  KGEN=android15 ;;
+            6.12) KGEN=android16 ;;
+            *)    KGEN=android12
+                  echo "::warning::kernel ${KMAJMIN} has no known GKI generation - assuming android12; SuSFS will most likely not apply" ;;
+          esac
+          KERNEL_BASE="${KGEN}-${KMAJMIN}.${KSUBLEVEL}"
           echo "==> Detected kernel version: ${KERNEL_BASE}"
-          echo "KERNEL_BASE=${KERNEL_BASE}" >> $GITHUB_ENV
+          {
+            echo "KERNEL_BASE=${KERNEL_BASE}"
+            echo "KERNEL_MAJMIN=${KMAJMIN}"
+            echo "SUSFS_BRANCH=gki-${KGEN}-${KMAJMIN}"
+            echo "SUSFS_PATCH=50_add_susfs_in_gki-${KGEN}-${KMAJMIN}.patch"
+          } >> $GITHUB_ENV
 
       - name: Download LLVM (latest stable release)
         run: |
@@ -498,20 +535,20 @@ jobs:
             # case); only pay for full history when pinning to a specific
             # older commit, since checking that commit out needs it.
             if [[ -n "${{ inputs.susfs_commit }}" ]]; then
-              git clone -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              git clone -b "${SUSFS_BRANCH}" https://gitlab.com/simonpunk/susfs4ksu.git susfs
               cd susfs
               echo "==> SUSFS: pinning to custom commit ${{ inputs.susfs_commit }}"
               git checkout "${{ inputs.susfs_commit }}"
             else
-              git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              git clone --depth=1 -b "${SUSFS_BRANCH}" https://gitlab.com/simonpunk/susfs4ksu.git susfs
               cd susfs
-              echo "==> SUSFS: using latest commit on branch gki-android12-5.10"
+              echo "==> SUSFS: using latest commit on branch ${SUSFS_BRANCH}"
             fi
 
             SUSFS_COMMIT=$(git rev-parse --short HEAD)
             echo "SUSFS_COMMIT=${SUSFS_COMMIT}" >> $GITHUB_ENV
             echo "==> SUSFS: checked out commit ${SUSFS_COMMIT}"
-            cp ./kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ..
+            cp "./kernel_patches/${SUSFS_PATCH}" ..
             cp ./kernel_patches/fs/* ../fs/
             cp ./kernel_patches/include/linux/* ../include/linux/
 
@@ -561,7 +598,7 @@ jobs:
             # Without the hooks BakaSU runs selinux_hide itself (its own documented fallback:
             # "selinux_hide still working, but it will handle in BakaSU instead of susfs").
             SELINUX_HIDE_MISSING=()
-            for fn in $(grep -oE '\bmy_(setprocattr|write_context|write_access)\b' 50_add_susfs_in_gki-android12-5.10.patch | sort -u); do
+            for fn in $(grep -oE '\bmy_(setprocattr|write_context|write_access)\b' "${SUSFS_PATCH}" | sort -u); do
               grep -rhsE "^[a-z_][a-z0-9_ *]*\b${fn}[[:space:]]*\(" drivers/kernelsu/ \
                 | grep -vqE '^static|;[[:space:]]*$' || SELINUX_HIDE_MISSING+=("$fn")
             done
@@ -571,16 +608,16 @@ jobs:
             fi
             FD_ARGS=()
             for f in "${SUSFS_SKIP[@]}"; do FD_ARGS+=(-x "*${f}"); done
-            filterdiff "${FD_ARGS[@]}" 50_add_susfs_in_gki-android12-5.10.patch \
-              > 50_add_susfs_in_gki-android12-5.10.filtered.patch
+            filterdiff "${FD_ARGS[@]}" "${SUSFS_PATCH}" \
+              > "${SUSFS_PATCH%.patch}.filtered.patch"
 
-            if [[ ! -s 50_add_susfs_in_gki-android12-5.10.filtered.patch ]]; then
+            if [[ ! -s "${SUSFS_PATCH%.patch}.filtered.patch" ]]; then
               echo "::error::filterdiff produced an empty patch file - either it isn't installed correctly or the -x exclude globs matched everything. Refusing to silently skip every susfs hook."
               exit 1
             fi
 
             for f in "${SUSFS_SKIP[@]}"; do
-              if grep -qE "^\+\+\+ .*/${f//./\\.}([[:space:]]|\$)" 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+              if grep -qE "^\+\+\+ .*/${f//./\\.}([[:space:]]|\$)" "${SUSFS_PATCH%.patch}.filtered.patch"; then
                 echo "::error::${f} hunks are still present after filterdiff - this patch's --- /+++ header style doesn't match the -x globs above. Check the raw patch's path prefixing and adjust them."
                 exit 1
               fi
@@ -590,7 +627,7 @@ jobs:
             # (e.g. BBG/NoMount/DroidSpaces touching the same fs/ files) -
             # this only ever silently skips a hunk that's genuinely already
             # applied; anything that doesn't match still fails loudly below.
-            if ! patch -p1 -N < 50_add_susfs_in_gki-android12-5.10.filtered.patch; then
+            if ! patch -p1 -N < "${SUSFS_PATCH%.patch}.filtered.patch"; then
               echo "::error::SuSFS patch failed to apply cleanly against commit ${SUSFS_COMMIT} (skipped files, if any: ${SUSFS_SKIP[*]:-none} - see the stat.c/statfs.c note above). This almost always means susfs4ksu's upstream patch has drifted (a new commit shifted its context lines) or another enabled feature already modified the same fs/ files. Check this run's 'susfs-patch-rejects' artifact for the exact hunks that didn't match. The reliable fix for recurring breakage is pinning susfs_commit to a commit you've confirmed builds, instead of always tracking the branch tip."
               exit 1
             fi
@@ -801,6 +838,13 @@ jobs:
           if [[ "${{ env.FEAT_REKERNEL_NETLINK }}" == true ]]; then
             git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Sakion-Team/Re-Kernel.git rekernel-src
             bash rekernel-src/Integrate/patches.sh
+            # Linux 6.6 builds with -Werror and its netlink_unit is an unsigned long that
+            # rekernel.c prints with %d (plus one snprintf with a spare argument) - log text only,
+            # the values print right. Keep those two warnings visible but non-fatal for this one
+            # object; on 5.10 they do not occur.
+            if [[ -f drivers/rekernel/Makefile ]] && ! grep -q 'CFLAGS_rekernel.o' drivers/rekernel/Makefile; then
+              echo 'CFLAGS_rekernel.o += -Wno-error=format -Wno-error=format-extra-args' >> drivers/rekernel/Makefile
+            fi
             echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
             echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/${KERNEL_DEFCONFIG}
           fi
@@ -845,10 +889,24 @@ jobs:
             DROIDSPACES_SAFE=true
 
             curl -sLo patch-for-below-6.12.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
-            apply_droidspaces_patch patch-for-below-6.12.patch "patch 001 (sysvipc kabi fix)" || DROIDSPACES_SAFE=false
+            if ! apply_droidspaces_patch patch-for-below-6.12.patch "patch 001 (sysvipc kabi fix)"; then
+              # The patch moves sysvsem/sysvshm into kABI reserve slots so CONFIG_SYSVIPC can be
+              # turned on without breaking a GKI kernel's layout. A source whose own configs
+              # already enable CONFIG_SYSVIPC (Linux 6.6) builds its modules with sysvsem/sysvshm
+              # where they are, so its tree is already what DroidSpaces needs.
+              if grep -qs '^CONFIG_SYSVIPC=y' arch/arm64/configs/${KERNEL_DEFCONFIG} $(for x in ${KERNEL_CONFIG_FRAGMENTS}; do echo arch/arm64/configs/$x; done); then
+                echo "==> DroidSpaces patch 001: not needed - this kernel source enables CONFIG_SYSVIPC itself (its task_struct layout, and the modules built from it, already carry sysvsem/sysvshm)"
+              else
+                DROIDSPACES_SAFE=false
+              fi
+            fi
 
             curl -sLo patch-for-5.10-or-lower.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
-            apply_droidspaces_patch patch-for-5.10-or-lower.patch "patch 002 (posix_mqueue abi padding)" || DROIDSPACES_SAFE=false
+            if [[ "$(printf '%s\n' "${KERNEL_MAJMIN}" 5.10 | sort -V | head -1)" == "${KERNEL_MAJMIN}" ]]; then
+              apply_droidspaces_patch patch-for-5.10-or-lower.patch "patch 002 (posix_mqueue abi padding)" || DROIDSPACES_SAFE=false
+            else
+              echo "==> DroidSpaces: patch 002 (posix_mqueue abi padding) is for 5.10 or lower - not needed on ${KERNEL_MAJMIN}"
+            fi
 
             if [[ "$DROIDSPACES_SAFE" == true ]]; then
               if [[ -f "${GITHUB_WORKSPACE}/configs/droidspaces-gki.config" ]]; then
@@ -883,6 +941,18 @@ jobs:
 
           # Melt / Stock AOSP-AOSPA / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
           make O=out ${KERNEL_DEFCONFIG} ${KERNEL_CONFIG_FRAGMENTS} ${DROIDSPACES_CONFIG}
+
+          # BakaSU reaches a few static SELinux symbols through kallsyms; without
+          # CONFIG_KALLSYMS_ALL (Linux 6.6: its gki_defconfig asks for it, but DEBUG_KERNEL is off)
+          # it stops the build ("You should integrate BakaSU in your kernel") unless they are
+          # exported - BakaSU's documented "static symbol export". Only those symbols lose
+          # 'static'; the 5.10 sources have KALLSYMS_ALL, so this does not run there.
+          if [[ "${{ env.FEAT_KSU_TYPE }}" == BakaSU || "${{ env.FEAT_KSU_TYPE }}" == ReSukiSU ]] \
+             && ! grep -q '^CONFIG_KALLSYMS_ALL=y' out/.config; then
+            sed -i -E 's/^static (const struct file_operations sel_handle_status_ops\b)/\1/; s/^static (ssize_t \(\*(const )?write_op\[\]\))/\1/' security/selinux/selinuxfs.c
+            sed -i -E 's/^static (void (security_dump_masked_av|context_struct_compute_av)\()/\1/' security/selinux/ss/services.c
+            echo "==> ${{ env.FEAT_KSU_TYPE }}: CONFIG_KALLSYMS_ALL is off - exported sel_handle_status_ops, write_op, security_dump_masked_av, context_struct_compute_av (static symbol export)"
+          fi
 
           echo "::group::Sanity-check defconfig (savedefconfig)"
 
