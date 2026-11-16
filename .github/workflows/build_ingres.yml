@@ -1121,6 +1121,49 @@ jobs:
           echo "BAKASU_MANAGER_APK=bakasu-manager/out/$(basename "$APK")" >> "$GITHUB_ENV"
           echo "BAKASU_MANAGER_INFO=manager ${MGR_CODE:-?} (latest Baka-SU/BakaSU ${MBRANCH} build), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
 
+      # KernelSU-Next: attach its manager APK as well. Both driver sources (KernelSU-Next dev, and
+      # pershoot's dev-susfs, which counts its version only up to its merge-base with dev) carry
+      # the version of KernelSU-Next's dev branch, so the manager comes from there: the latest
+      # successful Build Manager CI run on dev (nightly.link), else the newest release. Attached
+      # only if its MINIMAL_SUPPORTED_KERNEL (Natives.kt on dev) covers this kernel's version, read
+      # from the build itself (-DKSU_VERSION). Never fails the build: problems are warnings.
+      - name: Fetch KernelSU-Next manager
+        if: ${{ env.FEAT_KSU_TYPE == 'KernelSU-Next' }}
+        run: |
+          set -o pipefail
+          D="${GITHUB_WORKSPACE}/ksun-manager"
+          rm -rf "$D" && mkdir -p "$D/x" "$D/out"
+          SRC=""
+          URL="https://nightly.link/KernelSU-Next/KernelSU-Next/workflows/build-manager-ci/dev/manager.zip"
+          if curl -fsSL --retry 3 --retry-delay 5 -o "$D/m.zip" "$URL" && unzip -q -o "$D/m.zip" -d "$D/x"; then
+            SRC="latest KernelSU-Next dev CI build"
+          else
+            echo "::warning::could not fetch the KernelSU-Next manager from ${URL} - trying the newest release"
+            rm -rf "$D/x" && mkdir -p "$D/x"
+            if gh release download --repo KernelSU-Next/KernelSU-Next --pattern '*.apk' --dir "$D/x"; then
+              SRC="KernelSU-Next release $(gh release view --repo KernelSU-Next/KernelSU-Next --json tagName --jq .tagName 2>/dev/null || echo latest)"
+            fi
+          fi
+          APK=$(find "$D/x" -name '*.apk' ! -iname '*spoof*' ! -iname '*debug*' | sort | tail -1)
+          [[ -n "$SRC" && -n "$APK" ]] || { echo "::warning::no KernelSU-Next manager APK could be fetched - the release goes out without it"; exit 0; }
+          # KernelSU_Next_<versionName>_<versionCode>-release.apk (outputFileName in manager/app/build.gradle.kts)
+          MGR_CODE=$(basename "$APK" | sed -n 's/.*_\([0-9]\{5,\}\)-[A-Za-z]*\.apk$/\1/p')
+          KER_CODE=$(find "${GITHUB_WORKSPACE}/${SOC}/out/drivers/kernelsu" -name '*.cmd' -exec grep -hoE -- '-DKSU_VERSION=[0-9]+' {} + 2>/dev/null | head -1 | cut -d= -f2 || true)
+          MIN=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/manager/app/src/main/java/com/rifsxd/ksunext/Natives.kt" 2>/dev/null \
+                | sed -n 's/.*MINIMAL_SUPPORTED_KERNEL *= *\([0-9]*\).*/\1/p' | head -1 || true)
+          echo "==> KernelSU-Next manager ${MGR_CODE:-?} from ${SRC} (needs kernel >= ${MIN:-?}); this kernel: ${KER_CODE:-?}"
+
+          if [[ -n "$KER_CODE" && -n "$MIN" ]] && (( KER_CODE < MIN )); then
+            echo "::warning::the KernelSU-Next manager needs kernel version >= ${MIN}, this kernel is ${KER_CODE} - not attaching it"
+            exit 0
+          fi
+          if [[ -z "$KER_CODE" || -z "$MIN" ]]; then
+            echo "::warning::could not read the kernel version or the manager's minimum - attaching the manager without the compatibility check"
+          fi
+          cp "$APK" "$D/out/"
+          echo "KSUN_MANAGER_APK=ksun-manager/out/$(basename "$APK")" >> "$GITHUB_ENV"
+          echo "KSUN_MANAGER_INFO=manager ${MGR_CODE:-?} (${SRC}), kernel ${KER_CODE:-?}, manager minimum ${MIN:-?}" >> "$GITHUB_ENV"
+
       - name: Make AnyKernel3
         run: |
           ZIP_NAME="${KERNEL_NAME}_${{ env.FEAT_KSU_TYPE }}"
@@ -1157,9 +1200,12 @@ jobs:
           fi
 
           ASSETS=("${ZIP_FILE}")
-          if [[ -n "${BAKASU_MANAGER_APK:-}" ]]; then
-            ASSETS+=("${BAKASU_MANAGER_APK}")
-            manager_checkbox="Attached: ${BAKASU_MANAGER_APK##*/} - ${BAKASU_MANAGER_INFO}"
+          # Manager APK of the KernelSU built in: BakaSU / ReSukiSU or KernelSU-Next.
+          MANAGER_APK="${BAKASU_MANAGER_APK:-${KSUN_MANAGER_APK:-}}"
+          MANAGER_INFO="${BAKASU_MANAGER_INFO:-${KSUN_MANAGER_INFO:-}}"
+          if [[ -n "${MANAGER_APK}" ]]; then
+            ASSETS+=("${MANAGER_APK}")
+            manager_checkbox="Attached: ${MANAGER_APK##*/} - ${MANAGER_INFO}"
           else
             manager_checkbox="Not attached"
           fi
