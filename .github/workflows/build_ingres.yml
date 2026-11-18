@@ -66,7 +66,7 @@ on:
           - SukiSUUltra
 
       bakasu_ref:
-        description: "Only for ksu_type BakaSU / ReSukiSU (the same project). Tag, branch or commit of Baka-SU/BakaSU. Leave empty (default) to pick automatically: main if it builds with susfs, else the dev branch with the susfs re-sync (BAKASU_DEV_BRANCH, sync-susfs), else the last known-good commit - and back to main by itself once BakaSU merges the re-sync. Set a ref to build exactly that one (fails within seconds if it blocks susfs)."
+        description: "Only for ksu_type BakaSU / ReSukiSU (the same project). Tag, branch or commit of Baka-SU/BakaSU. Leave empty (default) for the newest main - BakaSU's latest commits at every build - falling back to BAKASU_DEV_BRANCH (if set) and then the last known-good commit only if main ever blocks susfs. Set a ref to build exactly that one (fails within seconds if it blocks susfs)."
         required: false
         type: string
         default: ""
@@ -146,9 +146,10 @@ jobs:
         # fallback while main and BAKASU_DEV_BRANCH are blocked - see setup_bakasu in
         # the "Integrate KernelSU" step. Bump it once a newer commit is confirmed to work.
         BAKASU_KNOWN_GOOD: "9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
-        # BakaSU dev branch carrying the susfs re-sync (14 Oct 2026). Tried after main and
-        # before BAKASU_KNOWN_GOOD; skipped automatically once it is merged and deleted.
-        BAKASU_DEV_BRANCH: "sync-susfs"
+        # Optional BakaSU branch tried after main and before BAKASU_KNOWN_GOOD. Empty: the
+        # susfs re-sync branch (sync-susfs) was merged into main and deleted - main builds with
+        # susfs, so every build takes BakaSU's newest main.
+        BAKASU_DEV_BRANCH: ""
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -526,7 +527,7 @@ jobs:
               if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
                 run_setup "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" dev-susfs
               else
-                run_setup "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" dev
+                run_setup "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" dev
               fi
               ;;
 
