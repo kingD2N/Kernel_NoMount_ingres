@@ -1,23 +1,23 @@
-name: Compile Kernel Melt-MIX / Stock AOSP-AOSPA / Stock HyperOS / Avalon / Linux 6.6 - POCO F4 GT (Ingres)
+name: Compile Kernel Melt-MIX / LineageOS 24 / Stock HyperOS / Avalon / Linux 6.6 - POCO F4 GT (Ingres)
 
 on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | Stock AOSP-AOSPA = kingD2N/android_kernel_xiaomi_sm8450 | Stock AOSP-AOSPA (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Linux 6.6 = kingD2N/android_kernel6_xiaomi_sm8450 (LineageOS 24, kernel 6.6)"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | LineageOS 24 = kingD2N/android_kernel_xiaomi_sm8450 (stock LineageOS kernel, 5.10) | LineageOS 24 (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Linux 6.6 = kingD2N/android_kernel6_xiaomi_sm8450 (LineageOS 24, kernel 6.6)"
         required: true
         type: choice
         default: Melt
         options:
           - Melt
-          - Stock AOSP-AOSPA
-          - Stock AOSP-AOSPA (Pure)
+          - LineageOS 24
+          - LineageOS 24 (Pure)
           - Stock HyperOS
           - Avalon
           - Linux 6.6
 
       kernel_branch:
-        description: "auto = melt-MIX (Melt), lineage-23.2 (Stock AOSP-AOSPA and its Pure build), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Linux 6.6). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        description: "auto = melt-MIX (Melt), lineage-24.0 (LineageOS 24 and its Pure build; lineage-24.0-a17, or lineage-23.2 for A16, on request), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Linux 6.6). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -29,6 +29,8 @@ on:
           - melt-rebase
           - Yudharn-melt-rebase
           - lineage-24.0
+          - lineage-24.0-a17
+          - lineage-23.2
           - lineage-22.2
 
       kernel_source_url:
@@ -70,7 +72,7 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), Stock-AOSP-AOSPA-KERNEL, Stock-AOSP-AOSPA-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Linux-6.6-KERNEL"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), LineageOS-24-KERNEL, LineageOS-24-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Linux-6.6-KERNEL"
         required: false
         type: choice
         default: auto
@@ -79,8 +81,8 @@ on:
           - MIX™-KERNEL
           - Melt-KERNEL
           - LazyGoogle-KERNEL
-          - Stock-AOSP-AOSPA-KERNEL
-          - Stock-AOSP-AOSPA-PURE-KERNEL
+          - LineageOS-24-KERNEL
+          - LineageOS-24-PURE-KERNEL
           - Stock-HyperOS-KERNEL
           - Avalon-KERNEL
           - Linux-6.6-KERNEL
@@ -201,12 +203,12 @@ jobs:
           FRAGMENTS="vendor/waipio_GKI.config vendor/xiaomi_GKI.config vendor/ingres_GKI.config vendor/debugfs.config"
           PURE=false
           case "${{ inputs.kernel_source }}" in
-            "Stock AOSP-AOSPA")
-              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa
-              NAME=Stock-AOSP-AOSPA-KERNEL; ROM="Official AOSP / AOSPA"; CFG= ;;
-            "Stock AOSP-AOSPA (Pure)")
-              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-23.2; TAG=-aospa-pure
-              NAME=Stock-AOSP-AOSPA-PURE-KERNEL; ROM="Official AOSP / AOSPA"; CFG=; PURE=true ;;
+            "LineageOS 24")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-24.0; TAG=-los24
+              NAME=LineageOS-24-KERNEL; ROM="Official AOSP (LineageOS 24)"; CFG= ;;
+            "LineageOS 24 (Pure)")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-24.0; TAG=-los24-pure
+              NAME=LineageOS-24-PURE-KERNEL; ROM="Official AOSP (LineageOS 24)"; CFG=; PURE=true ;;
             "Stock HyperOS")
               URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
               NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
@@ -577,7 +579,7 @@ jobs:
             # (Melt does) gets these two files' hunks skipped - during the Sept 2026
             # SUS_KSTAT/statfs rework they drifted out of sync with such pre-patched copies and
             # every one of them was rejected (Numbersf/Action-Build#269 for the sibling case).
-            # A clean source (Stock AOSP-AOSPA) needs them applied, or the SUS_KSTAT hooks are
+            # A clean source (LineageOS 24) needs them applied, or the SUS_KSTAT hooks are
             # silently missing. Decided per file from the tree itself; the extern/wrapper
             # fixups below run either way.
             SUSFS_SKIP=()
@@ -951,7 +953,7 @@ jobs:
             done
           fi
 
-          # Melt / Stock AOSP-AOSPA / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
+          # Melt / LineageOS 24 / Stock HyperOS: gki_defconfig + the waipio/xiaomi/ingres/debugfs fragments; Avalon: its full ingres_user_defconfig
           make O=out ${KERNEL_DEFCONFIG} ${KERNEL_CONFIG_FRAGMENTS} ${DROIDSPACES_CONFIG}
 
           # Re-Kernel eBPF reads its types from vmlinux's BTF - stop now, not after the whole build.
