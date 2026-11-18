@@ -43,13 +43,13 @@ on:
         description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch; not used by Avalon or Linux 6.6)"
         required: true
         type: string
-        default: "lineage-23.2"
+        default: "lineage-24.0"
 
       devicetree_branch:
-        description: "Branch of Ingres-Centre/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead; not used by Avalon or Linux 6.6)"
+        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead; not used by Avalon or Linux 6.6)"
         required: true
         type: string
-        default: "lineage-23.2"
+        default: "lineage-24.0"
 
       ksu_type:
         description: "KernelSU variant (BakaSU and ReSukiSU are the same project - see bakasu_ref)"
@@ -310,8 +310,8 @@ jobs:
             git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
 
             rm -rf ${SOC}/arch/arm64/boot/dts/vendor
-            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
-              || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/Ingres-Centre/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
+              || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
           fi
 
       - name: Detect kernel version
