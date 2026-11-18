@@ -40,13 +40,13 @@ on:
         default: ""
 
       modules_branch:
-        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-modules (independent of kernel_branch; not used by Avalon or Linux 6.6)"
+        description: "Branch of kingD2N/android_kernel_xiaomi_sm8450-modules (falls back to LineageOS/android_kernel_xiaomi_sm8450-modules while that repo or branch does not exist; independent of kernel_branch; not used by Avalon or Linux 6.6)"
         required: true
         type: string
         default: "lineage-24.0"
 
       devicetree_branch:
-        description: "Branch of LineageOS/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead; not used by Avalon or Linux 6.6)"
+        description: "Branch of kingD2N/android_kernel_xiaomi_sm8450-devicetrees (if it does not exist there, the repo's default branch is cloned instead; not used by Avalon or Linux 6.6)"
         required: true
         type: string
         default: "lineage-24.0"
@@ -307,11 +307,22 @@ jobs:
             echo "==> Linux 6.6: bundled KernelSU-Next and its CONFIG_KSU* lines removed (ksu_type: ${{ inputs.ksu_type }}, susfs: ${{ inputs.susfs }})"
           else
             git clone --depth=1 --recurse-submodules --shallow-submodules -b "$BR" "$URL" ${SOC}
-            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git ${SOC}-modules
+            # Kernel modules and device trees from kingD2N's own repos. Modules fall back to
+            # LineageOS's repo while kingD2N/android_kernel_xiaomi_sm8450-modules (or the branch)
+            # does not exist yet. Both are only cloned - the build makes the Image alone.
+            MOD_REPO=https://github.com/kingD2N/android_kernel_xiaomi_${SOC}-modules.git
+            if ! GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads "$MOD_REPO" "${{ inputs.modules_branch }}" > /dev/null 2>&1; then
+              echo "::notice::kingD2N/android_kernel_xiaomi_${SOC}-modules (branch ${{ inputs.modules_branch }}) not found - using LineageOS/android_kernel_xiaomi_${SOC}-modules"
+              MOD_REPO=https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-modules.git
+            fi
+            echo "==> Kernel modules: ${MOD_REPO} @ ${{ inputs.modules_branch }}"
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.modules_branch }} "$MOD_REPO" ${SOC}-modules
 
+            DT_REPO=https://github.com/kingD2N/android_kernel_xiaomi_${SOC}-devicetrees.git
+            echo "==> Device trees: ${DT_REPO} @ ${{ inputs.devicetree_branch }}"
             rm -rf ${SOC}/arch/arm64/boot/dts/vendor
-            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor \
-              || git clone --depth=1 --recurse-submodules --shallow-submodules https://github.com/LineageOS/android_kernel_xiaomi_${SOC}-devicetrees.git ${SOC}/arch/arm64/boot/dts/vendor
+            git clone --depth=1 --recurse-submodules --shallow-submodules -b ${{ inputs.devicetree_branch }} "$DT_REPO" ${SOC}/arch/arm64/boot/dts/vendor \
+              || git clone --depth=1 --recurse-submodules --shallow-submodules "$DT_REPO" ${SOC}/arch/arm64/boot/dts/vendor
           fi
 
       - name: Detect kernel version
