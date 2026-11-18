@@ -4,20 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       kernel_source:
-        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | LineageOS 24 = kingD2N/android_kernel_xiaomi_sm8450 (stock LineageOS kernel, 5.10) | LineageOS 24 (Pure) = the same kernel with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Linux 6.6 = kingD2N/android_kernel6_xiaomi_sm8450 (LineageOS 24, kernel 6.6)"
+        description: "Melt = Melt-MIX for AOSP (kingD2N/kernel_source_Melt_xiaomi_ingres) | LineageOS 24 = kingD2N/android_kernel_xiaomi_sm8450 (stock LineageOS kernel, 5.10) | LineageOS 24 (ORI) = the same kernel, original with no KernelSU, SuSFS, BBG, Re-Kernel, DroidSpaces or NoMount (their ticks are ignored) | Stock HyperOS = Melt for stock HyperOS (kingD2NN/Pzqqt-Melt-Rebase + ingres HyperOS configs) | Avalon = ruik3z/kernel-ingres (LineageOS 23.2 based, NetHunter) | Linux 6.6 = kingD2N/android_kernel6_xiaomi_sm8450 (LineageOS 24, kernel 6.6)"
         required: true
         type: choice
         default: Melt
         options:
           - Melt
           - LineageOS 24
-          - LineageOS 24 (Pure)
+          - LineageOS 24 (ORI)
           - Stock HyperOS
           - Avalon
           - Linux 6.6
 
       kernel_branch:
-        description: "auto = melt-MIX (Melt), lineage-24.0 (LineageOS 24 and its Pure build; lineage-24.0-a17, or lineage-23.2 for A16, on request), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Linux 6.6). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
+        description: "auto = melt-MIX (Melt), lineage-24.0 (LineageOS 24 and its ORI build; lineage-24.0-a17, or lineage-23.2 for A16, on request), Yudharn-melt-rebase (Stock HyperOS), main (Avalon), lineage-24.0 (Linux 6.6). Pick another only if the chosen source has it - otherwise the build stops at once and lists its branches."
         required: true
         type: choice
         default: auto
@@ -72,7 +72,7 @@ on:
         default: ""
 
       custom_name:
-        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), LineageOS-24-KERNEL, LineageOS-24-PURE-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Linux-6.6-KERNEL"
+        description: "Kernel name (release title, ZIP name and the uname suffix). auto = MIX™-KERNEL (Melt), LineageOS-24-KERNEL, LineageOS-24-ORI-KERNEL, Stock-HyperOS-KERNEL, Avalon-KERNEL, Linux-6.6-KERNEL"
         required: false
         type: choice
         default: auto
@@ -82,7 +82,7 @@ on:
           - Melt-KERNEL
           - LazyGoogle-KERNEL
           - LineageOS-24-KERNEL
-          - LineageOS-24-PURE-KERNEL
+          - LineageOS-24-ORI-KERNEL
           - Stock-HyperOS-KERNEL
           - Avalon-KERNEL
           - Linux-6.6-KERNEL
@@ -206,9 +206,9 @@ jobs:
             "LineageOS 24")
               URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-24.0; TAG=-los24
               NAME=LineageOS-24-KERNEL; ROM="Official AOSP (LineageOS 24)"; CFG= ;;
-            "LineageOS 24 (Pure)")
-              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-24.0; TAG=-los24-pure
-              NAME=LineageOS-24-PURE-KERNEL; ROM="Official AOSP (LineageOS 24)"; CFG=; PURE=true ;;
+            "LineageOS 24 (ORI)")
+              URL=https://github.com/kingD2N/android_kernel_xiaomi_sm8450; DEF=lineage-24.0; TAG=-los24-ori
+              NAME=LineageOS-24-ORI-KERNEL; ROM="Official AOSP (LineageOS 24)"; CFG=; PURE=true ;;
             "Stock HyperOS")
               URL=https://github.com/kingD2NN/Pzqqt-Melt-Rebase; DEF=Yudharn-melt-rebase; TAG=-hyperos
               NAME=Stock-HyperOS-KERNEL; ROM="Stock HyperOS"; CFG=hyperos ;;
@@ -249,10 +249,10 @@ jobs:
           } >> "$GITHUB_ENV"
 
           # Feature switches every later step reads (FEAT_*): the ticks as given, except for a
-          # Pure build, which turns every addition off whatever is ticked.
+          # ORI (original) build, which turns every addition off whatever is ticked.
           if [[ "$PURE" == true ]]; then
             FEAT=(None false false false false false false)
-            echo "==> Pure stock build: KernelSU, SuSFS, BBG, Re-Kernel (netlink + eBPF), DroidSpaces and NoMount are off - their ticks are ignored"
+            echo "==> ORI (original) stock build: KernelSU, SuSFS, BBG, Re-Kernel (netlink + eBPF), DroidSpaces and NoMount are off - their ticks are ignored"
           else
             FEAT=("${{ inputs.ksu_type }}" "${{ inputs.susfs }}" "${{ inputs.BBG }}" "${{ inputs.rekernel_netlink }}" "${{ inputs.rekernel_ebpf }}" "${{ inputs.droidspaces }}" "${{ inputs.nomount }}")
           fi
