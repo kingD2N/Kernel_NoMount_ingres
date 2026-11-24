@@ -1102,7 +1102,12 @@ jobs:
                 echo "::error::${k} has no __versions section (no symbol CRCs) - this kernel would refuse it"
                 exit 1
               fi
-              vm=$(llvm-readelf -p .modinfo "$ko" | sed -n 's/.*vermagic=//p' | head -1)
+              # Read .modinfo as raw bytes: llvm-readelf -p prints non-ASCII bytes (the ™ in
+              # MIX™-KERNEL) as dots, so its text never matches kernel.release.
+              mi=$(mktemp)
+              llvm-objcopy --dump-section .modinfo="$mi" "$ko" "${mi}.o"
+              vm=$(tr '\0' '\n' < "$mi" | sed -n 's/^vermagic=//p' | head -1)
+              rm -f "$mi" "${mi}.o"
               if [[ "$vm" != "${KREL} "* ]]; then
                 echo "::error::${k} vermagic '${vm}' does not start with this kernel's release '${KREL}'"
                 exit 1
