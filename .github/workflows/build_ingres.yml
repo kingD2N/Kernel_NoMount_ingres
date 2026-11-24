@@ -135,6 +135,12 @@ on:
         type: boolean
         default: true
 
+      lkm:
+        description: "Build LKM: every out-of-tree module in this repo's lkm/ folder, built against this exact kernel (same vermagic + symbol CRCs) and attached to the release as .ko - they load only on this build's kernel"
+        required: true
+        type: boolean
+        default: true
+
 jobs:
   Build_Kernel:
     env:
@@ -1024,6 +1030,91 @@ jobs:
           echo "ccache status after build:"
           ccache -s
 
+      # Out-of-tree LKM: every lkm/<name>/ (a Kbuild or Makefile with obj-m) is built against the
+      # kernel just compiled - same tree, .config, clang and kernel release (vermagic), with the
+      # symbol CRCs from its own vmlinux.symvers (written when vmlinux is linked). These kernels
+      # have CONFIG_MODVERSIONS=y and no forced loading, so a .ko without matching CRCs is
+      # refused by insmod - which is also why a .ko only loads on the kernel of the same build.
+      - name: Build LKM (lkm/)
+        if: ${{ inputs.lkm }}
+        run: |
+          set -eo pipefail
+          CLANG_ROOT="${GITHUB_WORKSPACE}/toolchains/llvm/bin"
+          export PATH="${CLANG_ROOT}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="${CLANG_ROOT}/clang"
+          export HOSTCC="${CLANG_ROOT}/clang"
+          export LD="${CLANG_ROOT}/ld.lld"
+          export AR="${CLANG_ROOT}/llvm-ar"
+          export NM="${CLANG_ROOT}/llvm-nm"
+          export OBJCOPY="${CLANG_ROOT}/llvm-objcopy"
+          export OBJDUMP="${CLANG_ROOT}/llvm-objdump"
+          export STRIP="${CLANG_ROOT}/llvm-strip"
+
+          K="${GITHUB_WORKSPACE}/${SOC}"
+          OUT="${K}/out"
+          DEST="${GITHUB_WORKSPACE}/lkm-out"
+          rm -rf "$DEST" "${GITHUB_WORKSPACE}/lkm-build"
+          mkdir -p "$DEST" "${GITHUB_WORKSPACE}/lkm-build"
+
+          shopt -s nullglob
+          DIRS=()
+          for d in "${GITHUB_WORKSPACE}"/lkm/*/; do
+            d="${d%/}"
+            [[ -f "$d/Kbuild" || -f "$d/Makefile" ]] && DIRS+=("$d")
+          done
+          if (( ${#DIRS[@]} == 0 )); then
+            echo "::notice::lkm/ has no module folders (lkm/<name>/ with a Kbuild or Makefile) - nothing to build"
+            exit 0
+          fi
+          if ! grep -q '^CONFIG_MODULES=y' "${OUT}/.config"; then
+            echo "::warning::CONFIG_MODULES is off in this kernel - it cannot load any .ko, so lkm/ is skipped"
+            exit 0
+          fi
+          if [[ ! -s "${OUT}/vmlinux.symvers" ]]; then
+            echo "::error::${SOC}/out/vmlinux.symvers is missing - the symbol CRCs come from it, without them insmod refuses every module"
+            exit 1
+          fi
+          # External modules read the kernel's CRCs from Module.symvers; this build makes only
+          # the Image, so that file is vmlinux's own list (the same format).
+          [[ -s "${OUT}/Module.symvers" ]] || cp "${OUT}/vmlinux.symvers" "${OUT}/Module.symvers"
+
+          make -C "$K" O=out modules_prepare
+          KREL=$(cat "${OUT}/include/config/kernel.release")
+          echo "==> LKM: building ${#DIRS[@]} module folder(s) for kernel ${KREL}"
+
+          BUILT=()
+          for d in "${DIRS[@]}"; do
+            name=$(basename "$d")
+            b="${GITHUB_WORKSPACE}/lkm-build/${name}"
+            cp -r "$d" "$b"
+            echo "::group::LKM ${name}"
+            make -C "$K" O=out M="$b" -j"$(nproc)" modules
+            echo "::endgroup::"
+            kos=("$b"/*.ko)
+            (( ${#kos[@]} > 0 )) || { echo "::error::lkm/${name} built no .ko - check its Kbuild (obj-m := <name>.o)"; exit 1; }
+            for ko in "${kos[@]}"; do
+              k=$(basename "$ko")
+              if ! llvm-readelf -S "$ko" | grep -q '__versions'; then
+                echo "::error::${k} has no __versions section (no symbol CRCs) - this kernel would refuse it"
+                exit 1
+              fi
+              vm=$(llvm-readelf -p .modinfo "$ko" | sed -n 's/.*vermagic=//p' | head -1)
+              if [[ "$vm" != "${KREL} "* ]]; then
+                echo "::error::${k} vermagic '${vm}' does not start with this kernel's release '${KREL}'"
+                exit 1
+              fi
+              llvm-strip --strip-debug "$ko"
+              cp "$ko" "$DEST/"
+              BUILT+=("$k")
+              echo "✅ ${k} (vermagic: ${vm})"
+            done
+          done
+          echo "LKM_KO=${BUILT[*]}" >> "$GITHUB_ENV"
+
       - name: Save ccache
         if: ${{ always() && steps.ccache-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
@@ -1227,6 +1318,13 @@ jobs:
             ASSETS+=("rekernel-ebpf-out/rekernel.bpf.o" "rekernel-ebpf-out/rekerneld_aarch64")
           fi
 
+          if [[ -n "${LKM_KO:-}" ]]; then
+            for k in ${LKM_KO}; do ASSETS+=("lkm-out/${k}"); done
+            lkm_checkbox="${LKM_KO} (load only on this release's kernel)"
+          else
+            lkm_checkbox="None"
+          fi
+
           if [[ "${{ env.FEAT_SUSFS }}" == true ]]; then
             susfs_checkbox="Supported (susfs4ksu@${SUSFS_COMMIT})"
           else
@@ -1285,6 +1383,7 @@ jobs:
           | ⚙️ Re-Kernel (eBPF) | ${rekernel_ebpf_checkbox} |
           | 🧩 DroidSpaces | ${droidspaces_checkbox} |
           | 🗂️ NoMount | ${nomount_checkbox} |
+          | 🧩 LKM (.ko) | ${lkm_checkbox} |
           | 🔨 Compiler | LLVM/Clang ${LLVM_VERSION} Official |
 
           ---

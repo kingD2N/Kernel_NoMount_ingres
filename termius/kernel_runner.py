@@ -481,6 +481,7 @@ def run_build(repo, inputs_file, stop_after=None):
             files.append(os.path.join(WS, env[k]))
     if fmt(env.get("FEAT_REKERNEL_EBPF")) == "true":
         files += [os.path.join(WS, "rekernel-ebpf-out", f) for f in ("rekernel.bpf.o", "rekerneld_aarch64")]
+    files += [os.path.join(WS, "lkm-out", f) for f in env.get("LKM_KO", "").split()]
     for f in files:
         if os.path.isfile(f):
             shutil.copy2(f, out)
